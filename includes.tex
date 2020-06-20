@@ -1,0 +1,81 @@
+%&platex --translate-file=cp1250pl
+\documentclass[a4paper, article, 11pt]{article}
+\usepackage[margin=0.1in]{geometry}
+\usepackage{comment}
+\usepackage{fullpage}
+\usepackage{textcomp}
+\usepackage[british]{babel}
+\usepackage[utf8]{inputenc}
+\usepackage{multicol}
+\usepackage{multirow}
+\usepackage{fancyhdr}
+\usepackage[toc,page]{appendix}
+\usepackage{tabu}
+\usepackage{array}
+\usepackage{textcomp}
+\usepackage{makecell}
+\usepackage{siunitx}
+\usepackage{amsmath}
+\usepackage{mathtools}
+\renewcommand\theadfont{\bfseries\itshape}
+\usepackage{graphicx}
+\graphicspath{ {Images/} }
+\usepackage{float}
+\usepackage[parfill]{parskip}
+\usepackage{caption}
+%\usepackage{biblatex}
+\usepackage[usenames,dvipsnames,table]{xcolor}
+\usepackage{booktabs}
+\usepackage[T1]{fontenc}
+\usepackage{beramono}
+\usepackage{listings}
+\usepackage{inconsolata}
+\usepackage[absolute]{textpos}
+\usepackage{gensymb}
+\usepackage{hyperref}
+\usepackage{subcaption}
+\usepackage{jlcode}
+\usepackage{qtree}
+\usepackage{algorithm}
+\usepackage{algorithmic}
+\usepackage[htt]{hyphenat}
+\usepackage{svg}
+\usepackage{booktabs}
+\usepackage{acronym}
+
+\definecolor{lightgray}{gray}{0.95}
+\definecolor{mGreen}{rgb}{0,0.6,0}
+\definecolor{mGray}{rgb}{0.5,0.5,0.5}
+\definecolor{mPurple}{rgb}{0.58,0,0.82}
+
+\newcommand{\td}[1]{\textcolor{red}{#1}}
+
+%\lstdefinelanguage{Julia}{
+%    %Julia keywords and operators (red in OhMyREPL)
+%    keywords=[1]{function,return,end,%
+%                 +,-,+=,=,-=,/=,*=,/,*%
+%                 },
+%    %Types (cyan in OhMyREPL)             
+%    keywords=[2]{::Vector,::Array,::Int,::Int64,::Int32,::Float64,::Int32,::T,::String}
+%    sensitive=true,
+%    morecomment=[l]\#,
+%    morecomment=[n]{\#=}{=\#},
+%    morestring=[s]{"}{"},
+%    morestring=[m]{'}{'},
+%    basicstyle       = \ttfamily,
+%    keywordstyle     = [1]\bfseries\color{blue},
+%    keywordstyle     = [2]\bfseries\color{cyan},
+%    stringstyle      = \color{magenta},
+%    commentstyle     = \color{ForestGreen},
+%    showstringspaces = false,
+%}
+\lstset{
+    inputencoding=utf8,
+    extendedchars=true,
+    language=julia,
+    mathescape,
+    frame=single,
+    numbers=left,
+}
+\newcommand{\pluseq}{\mathrel{+}=}
+\DeclareMathOperator*{\argmax}{arg\,max}

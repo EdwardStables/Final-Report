@@ -1,0 +1,233 @@
+\section{Background}\label{sec_background}
+
+A reference for the acronyms used in this report is presented in Table \ref{table:TLA_ref}.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{|l|l|p{7cm}|}
+\hline
+Acronym & Meaning                           & Notes\\ \hline
+MOI     & MathOptInterface                  & A Julia package that provides a low level optimisation problem description interface \cite{ManualMathOptInterface}. \\ \hline
+JuMP    & Julia Mathematical Programming    & A Julia package that provides a high level optimisation problem description interface \cite{Dunning2017JuMP:Optimization}. \\ \hline
+RAM     & RowActionMethods                  & A package developed in this project to contain solvers in the class of row action methods. \\ \hline
+DSM     & DirectSearchMethods               & A package to be developed in this project to contain solvers in the class of direct search methods. \\ \hline
+API     & Application Programming Interface & A term to refer to the interface a piece of software provides for its use. \\ \hline
+\end{tabular}
+\caption{Acronym Reference}
+\label{table:TLA_ref}
+\end{table}
+
+\subsection{Julia}\label{sub_julia}
+Julia is a relatively new programming language, with development beginning in 2009 and the 1.0.0 version being released in 2018. The following subsection will discuss some of the language features that set Julia apart from its contemporaries, and the interesting design patterns that the language allows for. Further reading on using Julia in a high-performance computing role can be found in \cite{Bezanson2017Julia:Computing}.
+
+\subsubsection{Multiple Dispatch}
+Julia's main design paradigm is based on multiple-dispatch, but the language also takes aspects of procedural and functional languages into its design. Multiple dispatch is the ability for the language to have multiple definitions of the same function, with the most appropriate being called for a given set of arguments. This gives the ability to design software in a very generic way, with the ability to extend it later with new functionality for new data types without changing any of the existing codebase. No additional selection or parsing logic needs adding, as Julia itself is able to call the appropriate function. 
+
+A simple example of multiple dispatch is shown in Figure \ref{fig:julia_md_demo}. The function \texttt{range} has three definitions, one which takes an argument of two \texttt{Int} types, one with three \texttt{Int} arguments, and the final with two \texttt{Int}s and one \texttt{Float64}. Each method returns a range of values in a list inclusive of the two provided limits, but the exact implementation and returned data differs between each.
+
+\begin{figure}[t]
+    \centering
+    \lstinputlisting{code/multi_disp_demo.jl}
+    \caption{Three Range Implementations for Different Type Signatures}
+    \label{fig:julia_md_demo}
+\end{figure}
+
+This is heavily used within the Julia source code, for example, the addition function `\texttt{+}'  has 224 different implementations (at the time of writing), as different definitions of addition are applicable for different combinations of argument types. This  illustrates another strength of Julia's use of multiple dispatch, these default functions can be safely overridden for certain types. 
+
+In this project multiple dispatch is used in multiple ways, with the three main examples being:
+\begin{itemize}
+    \item Framework extensibility. Each algorithm within a framework is able to define its own set of functions within a common naming scheme, simplifying the internal framework design, and allowing for a consistent design between algorithms.
+    \item Default value calculation. In some cases where a user doesn't enter values in a function call, multiple dispatch is used to first call function to calculate default values before returning to the main call. This results in less branching operations from determining the default values in the main function.
+    \item Stopping condition management. This is discussed in detail in Section \ref{subsub:stop}. In brief, all conditions which a solver can be stopped for are given their own implementation of a common function, allowing the framework to evaluate stopping conditions that have been implemented in a custom manner.
+\end{itemize}
+
+%An example of where this may be useful could be when checking equality between two user-defined types. Julia defines what is known as a composite type, also known as a \texttt{struct}. These types are containers for other values, an example is shown in Figure \ref{fig:julia_struct_demo}. The \texttt{struct} contains fields that might be used to describe a person, with the following function providing a specific implementation of the equality function that only checks if the \texttt{Name} and \texttt{Age} fields of the two arguments are the same, ignoring the \texttt{Occupation} field. Again this is a toy example, but it showcases the ability Julia gives to heavily customise the behaviour of the language in response to the types used by a designer. 
+
+%\begin{figure}[t]
+%    \centering
+%    \lstinputlisting[language=julia,mathescape,frame={}]{code/julia_struct.jl}
+%    \caption{Demonstration of creating and accessing a struct}
+%    \label{fig:julia_struct_demo}
+%\end{figure}
+
+\subsubsection{Type System}
+Julia has an incredibly rich typing system which integrates very well with the multiple dispatch system. A simple example of types are shown in Figure \ref{fig:julia_md_demo}, showing the types of arguments after their definition, and the function's return type after the function declaration. The type system is arranged in an inheritance based structure, with each type tracing its inheritance back to the top-level abstract base class \texttt{Any}.
+
+Multiple dispatch makes use of this type hierarchy extensively. If the call \lstinline{range(1, 4)} was made to the code in Figure \ref{fig:julia_md_demo} Julia would recognise that the types of the arguments are both \texttt{Int64}. The type \texttt{Int64} is a child type of \texttt{Int}, meaning that it is valid to pass an \texttt{Int64} to any place \texttt{Int} is defined. Therefore the first function is called. 
+
+Alternatively, if the call \lstinline{range(1.5, 4, 3.1)} was made, Julia recognises that the arguments have types \texttt{Float64}, \texttt{Int64}, and \texttt{Float64} respectively. None of the defined functions have a type signature that fits this, and an error is thrown.
+
+\subsection{Optimisation in Julia}\label{sub_julia_opt}
+The Julia community has multiple organisations that are based around the development of optimisation libraries, solvers, and utilities. The largest two of these are JuliaOpt \cite{JuliaOpt:Language}, and JuliaSmoothOptimizers \cite{JuliaSmoothOptimizers}, with several smaller contributors that focus on more specific areas (e.g. the package BlackBoxOptim.jl focuses solely on derivative free optimisation). JuliaOpt contains a large collection of packages, most of which are interfaces to existing solvers (such as Gurobi, or GLPK), as well as the utility packages JuMP.jl \cite{IntroductionJuMP}\cite{Dunning2017JuMP:Optimization} and MathOptInterface.jl \cite{ManualMathOptInterface}. These last two packages are most relevant to this project.
+
+\subsubsection{MathOptInterface}
+MathOptInterface (MOI) is a Julia package that defines a standard interface to communicate with optimisation software packages. In addition it has the ability to identify the structure of a problem, the structures supported by a solver, and reformulate problems to be compatible. Discussions on the implementation of a MOI wrapper can be found in Section \ref{subsub_moi}.
+
+It is possible to define optimisation problems with the syntax offered by MOI, the objective function of the problem,
+\begin{equation}
+\begin{aligned}
+    \max_{x,y} 2x+7y, \\
+    -5 \leq x \leq 2, \\
+    y \leq 30, \\
+    2x + 8y \geq 3, \\
+    \label{eqn:example_jump}
+\end{aligned}
+\end{equation}
+may be defined with MOI as,
+\begin{lstlisting}[language=julia]
+x = MOI.VariableIndex(1)
+y = MOI.VariableIndex(2)
+a = MOI.ScalarAffineVariable(2, VariableIndex(1))
+b = MOI.ScalarAffineVariable(7, VariableIndex(2))
+f = MOI.ScalarAffineFunction([a,b], 0)
+\end{lstlisting}
+It is clear that the MOI interface is very verbose, declaring a new variable and type for each aspect of the function. This approach is necessary to ensure a well defined internal structure for the package, however it results in a unwieldy and complex system for manual use.
+
+\subsubsection{JuMP}
+Rather than interface with MOI directly, JuMP can be used to interface with MOI, which then translates the problem into a format used by solvers. JuMP operates at a much higher level than MOI, giving the freedom to input expressions directly. 
+
+The entire problem shown in Equation \ref{eqn:example_jump} can be formulated, solved, and queried in JuMP as shown in Figure \ref{fig:jump_optimisation_demo} (using the GLPK solver for Julia \cite{JuliaOpt/GLPK.jl:Julia}). What took five lines in MOI is accomplished in one with JuMP using the line \lstinline{@objective(model, Max, 2x + 7y)}. This expression is directly translated into the MOI expression, but in a layer hidden from the user. 
+
+\begin{figure}[t]
+    \centering
+    \lstinputlisting[language=julia,mathescape,frame={}]{code/JuMP_example.jl}
+    \caption{Demonstrating solving a simple optimisation problem in JuMP}
+    \label{fig:jump_optimisation_demo}
+\end{figure}
+
+This arrangement leads to a very flexible system, with a problem defined in JuMP easily being applied to multiple solvers without even needing to be re-entered into Julia. While each package in this project is given its own native API (very useful for testing and early development), it will also implement a MOI interface, letting the solver be used like any other optimisation package in Julia.
+
+\subsection{Hildreth's Algorithm}\label{sub_hildreth}
+Hildreth's algorithm was originally put forward in this project as an introductory topic for becoming more familiar with Julia. As has been previously discussed, this aspect of the project has been expanded into developing a framework for implementing general row-action methods. However this section will focus on Hildreth's original algorithm, and the structures within it that generalise to the class of row action methods.
+
+\subsubsection{Row Action Methods}
+Hildreth's algorithm is an early example of what is now known as a row action method, and was first put forwards by Hildreth in 1957 \cite{HildrethAPROCEDURE}. Since this time other row-action methods have been developed, with the algorithms showing good performance on huge, sparse matrices which have no detectable structure. A collection of such methods is put forwards by Censor in his 1981 paper \cite{ROW-ACTIONCENSORS}. Censor defines row-action methods as methods that:
+
+\begin{itemize}
+    \item Make no changes to the original matrix.
+    \item Perform no operations on the matrix as a whole.
+    \item Accesses only a single row of the matrix for each iteration.
+    \item When calculating the result of an iterative step, the only iterate needed is the result's immediate predecessor. 
+\end{itemize}
+
+This class of algorithms is not presented as a concrete set, but rather a broad category that algorithms may be adapted to meet the criteria of. Hildreth's algorithm was not originally created as a row-action method (being first proposed before the concept of these methods was defined), however the algorithm lends itself very well to this framework.
+
+\subsubsection{Algorithm}\label{subsub_hildreth_algo}
+
+The core algorithm presented by Hildreth solves the quadratic problem,
+\begin{gather}
+\min_x \frac{1}{2}x^TCx + d^Tx \text{ s.t. } Gx \geq h,\label{eqn:QP_prob}
+\end{gather}
+where C is a positive definite $n \times n$ matrix, G is an $m \times n$ matrix, and $x,d \in \mathbf{R}^n$. This is reformulated into the dual problem,
+\begin{gather}
+\min_z z^TAz + b^Tz \text{ s.t. }z\geq0,
+\end{gather}
+where,
+\begin{gather}
+A = -\frac{1}{4}GC^{-1}G^T, \label{eqn:QP_prob_var_A}\\
+b^T = \frac{1}{2}d^TC^{-1}G^T + h^T.\label{eqn:QP_prob_var_b}
+\end{gather}
+
+Each iteration of the algorithm performs the following operations, where $p$ is the iteration counter, $a_{pq}$ denotes the $(p,q)$th element of $A$, $i$ iterates through the range $(1,m)$ ($m$ being the number of constraints),
+\begin{gather}
+z_i^{(p+1)} = \max(0, w_i^{(p+1)})\label{eqn:case_b_dec},\\
+w_i^{(p+1)} = -\frac{1}{a_{ii}}\big(\sum_{j=1}^{i-1}a_{ij}z_j^{(p+1)}+\sum_{j=i+1}^ma_{ij}z_j^{(p)} + \frac{b_i}{2}\big).\label{eqn:hildreth_iteration}
+\end{gather}
+
+Equation \ref{eqn:hildreth_iteration} shows that each iteration updates the dual variable by considering every row in turn, with the decided values based solely off the values in the current row. The maximum of $w_i$ and $0$ is selected to ensure that the constraint of $z\geq 0$ is met. In general the initial value of $z$ can be any value in the feasible range.
+
+The core operation this algorithm performs is the orthogonal projection of the current point onto the constraint considered by the current row. Geometric interpretations of this operation are provided in both \cite{Lents1980EXTENSIONSPROGRAMMING} and \cite{ROW-ACTIONCENSORS}.
+   
+
+%In their 1980 paper \cite{Lents1980EXTENSIONSPROGRAMMING}, Lent and Censor give a geometric interpretation of the algorithm, with two possible cases. In this interpretation, $H_i$ refers to the half space that defines the feasible region, and $\partial H_i$ refers to the hyperplane that bounds $H_i$. Case one is shown in Figure \ref{fig:hildreth_1}, where the decision variable is currently on the infeasible side of $\partial H_i$. The move given by the algorithm's iteration will translate the decision variable to its orthogonal projection onto $\partial H_i$, making it now a feasible point with respect to the constraint $H_i$. Case two is shown in Figure \ref{fig:hildreth_2} and has the decision variable already within the feasible region, giving two possibilities. If the iteration would keep the decision variable within $H_i$, then it proceeds. If the iteration would move the decision variable past $\partial H_i$, into the infeasible region, then it it stopped on the boundary. This decision is shown in Equation \ref{eqn:case_b_dec}, where an update violating the condition that $z_i \geq 0$ results in $z_i$ being limited to zero.
+
+%\begin{figure}[t]
+%\centering
+%\begin{subfigure}[b]{.49\textwidth}
+%    \centering
+%    \includegraphics[width=\textwidth]{media/lent_censor_hildreth_f1.png}
+%    \caption{Decision variable moving from outside the viable range}
+%    \label{fig:hildreth_1}
+%\end{subfigure}
+%\begin{subfigure}[b]{.49\textwidth}
+%    \centering
+%    \includegraphics[width=\textwidth]{media/lent_censor_hildreth_f2.png}
+%    \caption{Decision variable moving within the viable range}
+%    \label{fig:hildreth_2}
+%\end{subfigure}
+%\label{fig:hildreth_cases}
+%\caption{The two possible cases of Hildreth's method \cite{Lents1980EXTENSIONSPROGRAMMING}}
+%\end{figure}
+
+\subsection{MADS Algorithm}\label{sub_MADS}
+The Mesh Adaptive Direct Search (MADS) algorithm \cite{Audet2007MeshOptimization} was first presented as an improvement on the Generalised Pattern Search (GPS) class of algorithms \cite{Torczon1997ON}. GPS is now defined as a special case of MADS. This class of algorithm is derivative free, making it particularly suitable in cases where the objective function and constraints are ill-defined, or expensive to compute. MADS is also suited to non-smooth functions.
+
+MADS describes a general class of algorithm, and several variations and implementations have been made, for example the OrthoMADS algorithm \cite{Abramson2009Orthomads:Ions}, or the NOMAD package \cite{LeDigabel2011AlgorithmAlgorithm}. NOMAD is the main standalone implementation of MADS and is implemented in C++, with Python and MATLAB interfaces also available. A simple example of MADS given in the original paper, named LTMADS, will be the initial algorithm developed within the MADS package for this project. 
+
+As is implied by its name, MADS defines a mesh structure of points over which it searches for a minimisation the target function. This mesh is not a set of points that is actually defined and stored, rather the algorithm stores the current minimum point (the incumbent), and step distance parameters. From these parameters, the next set of admissible points on the mesh are found and evaluated. If a new minimum is found then the incumbent point is updated and the step distance is increased (with the intention being that a coarser movement will give faster convergence). If no new minimum is present then the step distance is decreased, giving a finer movement.
+
+MADS defines a set of requirements for the selection of directions to poll, and the update rules of the step distances, but algorithm designers have a large degree of freedom in the exact implementation of each part of the algorithm, and will still fall within the convergence results of MADS.
+
+%\begin{gather}
+%    G = I\\
+%    D = [I - I]\\
+%    \tau = 4\\
+%    \omega^- = -1\\
+%    \omega^- = 1\\
+%    \Delta_0^m = 1\\
+%    \Delta_0^p = 1\\
+%    \Delta_{k+1}^m = 
+%    \begin{cases}
+%    \frac{\Delta^m_k}{4}    & \text{If $x_k$ is a mminimal frame center}\\
+%    4\Delta^m_k             & \text{If an improved mesh point is found, and if $\Delta^m_k \leq \frac{1}{4}$}\\
+%    \Delta_k^m              & \text{Otherwise}\\
+%    \end{cases}
+%\end{gather}
+
+%Given function $f$ and feasible set $\Omega$, MADS attempts to find a minimiser of the function $f_\Omega$, defined as,
+%\begin{gather}
+%   f_\Omega(x)\coloneqq 
+%   \begin{cases}
+%   f(x) & x \in \Omega,\\
+%   +\infty & x \notin \Omega.
+%   \end{cases}
+%\end{gather}
+%
+%Each point considered with MADS lies on a set of points, labelled the current mesh and denoted $M_k$, where $k$ is the iteration counter. $M_k$ is constructed from a set of directions $n_D$ where $D\subset\mathbf{R}^n$, and with size scaled by the mesh size parameter $\Delta_k^m \in \mathbf{R}_+$. For iteration $k$ the mesh is defined as,
+%\begin{gather}
+%    M_k \coloneqq \bigcup_{x\in S_k} \{x + \Delta_k^mDz : z \in \mathbf{N}^{n_D}\},
+%\end{gather}
+%$S_k$ is the set of points on which $f$ has already been evaluated, and $m$ is a parameter of the of the mesh size scaling and will be discussed later. 
+%
+%MADS contains two phases, known as the search and poll phases. The search stage is as follows:
+%\begin{itemize}
+%    \item Generate the set of trial mesh points, no specific strategy is defined for this generation.
+%    \item Determine feasibility of the trial points. If infeasible then set the point $f_\Omega(x)=+\infty$.
+%    \item Assess the value of the trail points, if smaller than the incumbent point then continue to the next iteration, or continue in search of a greater improvement.
+%    \item If no trial points present an improvement, then move to the poll phase. Otherwise perform the search again with the new incumbent point and an updated mesh size parameter. 
+%\end{itemize}
+%
+%This search phase is similar to that used in multiple previous algorithms. If the search step finds an improved point, then the mesh size is increased, as a coarser size is shown to improve convergence results, and the search step is repeated with the new incumbent point.
+%
+%For a fixed rational number $\tau>1$ and integers $\omega^- \leq -1$ and $\omega^+ \geq 0$, the update rule of $\Delta_k^m$ is,
+%\begin{gather}
+%    \Delta^m_{k+1} \coloneqq \tau^{\omega_k}\Delta^m_k,\\
+%    \text{where } \omega_k \in 
+%    \begin{cases}
+%    \{0,1,\dots,\omega^+\} & \text{If an improved point is found},\\
+%    \{\omega^-,\omega^-+1,\dots, -1\} & \text{Otherwise},
+%    \end{cases}
+%\end{gather}
+%
+%The poll phase is what sets MADS apart from prior methods, and is transitioned into if the search step fails to find an improved point. In this case, a point $x_{k+1}$ where $f_\Omega(x_{k+1}) = f_\Omega(x_k)$ is selected. $\Delta^m_k$ is then reduced, increasing the mesh resolution and evaluating points closer to $x_{k+1}$.
+%
+%The poll phase also introduces the poll size parameter $\Delta^p_k \in \mathbf{R}_+$. 
+
+\subsection{PIPS-NLP \& OSQP Algorithms}
+Work on the implementation of these algorithms has been scheduled for a later stage in the project and background research on the algorithms has not been completed to the same degree as Hildreth's Algorithm or MADS. Therefore this section contains just a very brief summary of the algorithms.
+
+PIPS-NLP is a filter line-search interior-point algorithm that provides a NLP (Non Linear Programming) extension to PIPS (Parallel Interior Point Solver) \cite{ChiangStructuredPIPS-NLP}. Interior point methods operate by describing the problem in terms of penalty functions (named barrier functions) that have their parameters varied on each iteration until an optimum is achieved. Solvers based on interior point methods are very common in commercial software, with the method showing strong performance on a range of problems.
+
+OSQP (Operator Splitting Quadratic Program) \cite{Stellato2017OSQP:Programs} is a more novel approach to the optimisation of quadratic problems, with the intention of providing few restrictions on the kind of constraints and the conditioning of problems it is given. The algorithm is also designed to allow for use in an embedded environment, for example, the algorithm may be configured to allow for no division operations to be done after the initial setup of variables.
+
+

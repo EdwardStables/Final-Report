@@ -1,0 +1,475 @@
+\section{Algorithms}\label{sec:algorithms}
+\subsection{Row Action Methods }\label{sub_row_action}
+Row action methods can be applied to a variety of smooth objective functions, with each algorithm in the class differing in its particular target function. These algorithms show good performance on huge, sparse matrices which have no detectable structure that may be exploited by other algorithms. A collection of such methods is put forwards by \cite{ROW-ACTIONCENSORS}, which characterises row action methods as methods that:
+
+\begin{itemize}
+    \item Make no changes to the original problem matrix.
+    \item Perform no operations on the matrix as a whole.
+    \item Access only a single row of the matrix for each iteration.
+    \item When calculating the result of an iterative step, the only other iterate needed is the result of the current iteration's predecessor.
+\end{itemize}
+
+This class of algorithms is not presented as a well defined set, but rather as a broad category that algorithms may be adapted to fit within. The target row action method for this project is Hildreth's algorithm and as such, a detailed description of the algorithm is given. This description will be referenced later in the report when discussing the implementation of the package.
+
+Most row action methods can be understood as a series of projections. Methods differ in how this is performed, for example Kaczmarz's method \cite{Liu2014AnAlgorithm}\cite{S.Kaczmarz1937AngenaherteGleichungen} solves a system of linear equations with a series of orthogonal projections onto the problem equations. This is shown in Figure \ref{fig:kaczmarz}, where the $H_i$ are the equations, and on each iteration the incumbent point $x^{(k)}$ is projected onto the equations in order, bringing it closer to the solution.
+
+\begin{figure}[thb]
+    \centering
+    \includesvg[width=0.9\textwidth]{media/karczman.svg}
+    \caption{Example of Orthogonal Projection in Kaczmarz's Algorithm (Figure adapted from \cite{ROW-ACTIONCENSORS})}
+    \label{fig:kaczmarz}
+\end{figure}
+
+
+
+
+\subsubsection{Hildreth's Algorithm}\label{subsub:hildreth_algo}
+
+Hildreth published his algorithm as a general procedure for solving quadratic programming problems \cite{HildrethAPROCEDURE}. However its easy adaption to a row action formulation is noted by Censor's paper on these methods. In an additional publication, Lent and Censor describe extensions to this method that provide improved performance of the algorithm \cite{Lents1980EXTENSIONSPROGRAMMING}. While this improved method is not implemented in this project, their formulation of the algorithm is also used here, and their proof that cyclic control does not affect convergence is critical in the adaption of the algorithm to a multi-threaded environment (Section \ref{sub:hildreth_threaded})
+
+The projection process is more complicated when compared to Kaczmarz's algorithm, and the possible cases are shown in Figure \ref{fig:hildreth_cases}. Firstly, rather than solving a system of linear equations, the algorithm uses the inequality constraints of a quadratic programming problem. In the example the bold lines in are the borders of the the halfspace that each constraint defines, with the dashes showing the valid halfspace. The example assumes that the pictured boundary is the one under consideration for the current iteration. The three cases are as follows:
+
+\begin{itemize}
+    \item If the incumbent point $x^{(k)}$ lies on the boundary, then the point is unchanged.
+    \item If $x^{(k)}$ is outside the feasible halfspace then it is updated to its orthogonal projection on the boundary.
+    \item If the point is within the feasible region then the algorithm defines a distance $d$ that it should move along its orthogonal projection onto the boundary. If a distance of $d$ would make the point invalid, then the movement is limited to keep the point on the boundary (point $x_2^{(k+1)}$ in the example), otherwise it lies distance $d$ along the orthogonal projection direction (point $x_1^{(k+1)}$).
+\end{itemize}
+
+\begin{figure}[thb]
+    \centering
+    \includesvg[width=0.9\textwidth]{media/hildreth_cases.svg}
+    \caption{Three Possible Cases of Hildreth's Algorithm (Figure adapted from \cite{Lents1980EXTENSIONSPROGRAMMING})}
+    \label{fig:hildreth_cases}
+\end{figure}
+
+
+\paragraph{Formulation}\\\
+
+The core algorithm presented by Hildreth solves the quadratic problem with $n$ variables and $m$ constraints,
+\begin{subequations}
+\begin{gather}
+\min_y \frac{1}{2}\langle By,y \rangle + \langle y,d \rangle, \\
+\text{s.t. }Gy \leq h,
+\end{gather}
+\end{subequations}
+where $y\in \mathbb{R}^n$, $d\in \mathbb{R}^n$, $B\in \mathbb{R}^{n\times n}$, $G\in \mathbb{R}^{m\times n}$, and $h\in \mathbb{R}^m$.
+
+By defining, 
+\begin{subequations}
+\begin{gather}
+B=D^TD,\label{eqn:B_decomp}\\
+y=D^{-1}x-B^{-1}d,\label{eqn:dual_to_primal}
+\end{gather}
+\end{subequations}
+where \ref{eqn:B_decomp} is a Cholesky decomposition, this can be reformulated as,
+
+\begin{subequations}
+\begin{gather}
+\min_x \frac{1}{2}\|x\|^2 \\
+\text{s.t. } Ax \leq b.
+\end{gather}
+\end{subequations}
+Where $A=GD^{-1}$ and $b = h + GB^{-1}d$. In this formulation, $x\in \mathbb{R}^n$, $A\in \mathbb{R}^{m\times n}$, and $b \in \mathbb{R}^m$. As before, $n$ is the number of decision variables, and $m$ is the number of constraints.
+
+In addition, the $m$-dimensional vector of dual variables, $z$, is defined. This is initialised to an arbitrary value within the non-negative orthant of $\mathbb{R}^m$ (ie, every entry is greater or equal to zero). Finally, the matrix $\Delta = AA^T \in \mathbb{R}^{m\times m}$ is defined.
+  
+\paragraph{Iteration}\\\
+
+A single iteration performs the following operation on each index of $z$ (subscripts indicate indexes, and superscripts in parenthesis indicate iteration numbers). Note that the update rule (\ref{eqn:hildreth_update_rule}) is not required within the iteration, therefore can be ignored until the final iteration.
+\begin{subequations}
+\begin{gather}
+z_i^{(k+1)} = \max\Big(0,z_i^{(k)}-\frac{1}{\Delta_{ii}}\big(b_i + \sum^m_{j=1}\Delta_{ij}z_j^{(k)}\big)\Big)\label{eqn:hildreth_iteration}\\
+x^{(k)}= -A^Tz^{(k)}\label{eqn:hildreth_update_rule}
+\end{gather}
+\end{subequations}
+This expressions shows that Hildreth's algorithm meets the requirements for being considered a row action method. 
+\begin{itemize}
+    \item The only modification made on each iteration is to the vector of dual variables
+    \item No matrix operations are performed (excluding the update rule)
+    \item An iteration that updates variable $i$ will only access row $i$ of the problem matrix
+    \item The iteration requires only information from the previous iteration, as well as the problem definition
+\end{itemize}
+
+%\paragraph{Visualisation}\\\
+%
+%Applying Hildreth's algorithm to the previously defined quadratic programming problem with
+%\begin{gather}
+%    B = \begin{bmatrix} 8 & -2 \\ -2 & 1 \end{bmatrix} \quad d = \begin{bmatrix} 3 \\ 1 \end{bmatrix},
+%\end{gather}
+%and
+%\begin{gather}
+%    G = \begin{bmatrix} -1 & 0 \\ 0 & -1 \end{bmatrix} \quad h = \begin{bmatrix} 0 \\ 0 \end{bmatrix},
+%\end{gather}
+%Produces the following set of incumbent points as it goes through iterations \td{objective function plot}.
+%
+%Applying the problem transformations gives the problem variables,
+%\begin{gather}
+%    A = \begin{bmatrix} -0.354 & -0.354 \\ 0.0 & -1.414 \end{bmatrix} \quad h = \begin{bmatrix} -1.25 \\ -3.5 \end{bmatrix} \quad \Delta = \begin{bmatrix} 0.245 & 0.5 \\ 0.5 & 2\end{bmatrix},
+%\end{gather}
+%And a corresponding plot of the transformed problem \td{dual objective function plot}:
+%
+%Running the algorithm from a starting position of $z=\begin{bmatrix} 1.2 \\ 6 \end{bmatrix}$ for 15 iterations shows the following incumbent points on each iteration:
+%\td{incumbent point plots}
+%
+%This illustrates the mechanism that Hildreth's algorithm is using to operate, forming a dual problem and projecting between constraint surfaces to move towards a minimum. It is interesting to note that this example problem is quite difficult for the algorithm due to the acute angle between constraints. This causes each iteration to not move much closer to the accumulation point. 
+
+%\subsubsection{Extended Hildreth's Algorithm}
+%As the original algorithm was proposed in 1957, many techniques have since been discovered that allow algorithms to perform better than the initial design. Lent and Censor \cite{Lents1980EXTENSIONSPROGRAMMING} have reformulated Hildreth's algorithm with some of these advancements, namely almost-cyclic control, and relaxation parameters. 
+%
+%\td{cover what almost-cyclic control and relaxation actually means}
+%
+%\paragraph{Formulation}\\\
+%
+%All parts of the formulation performed in \ref{subsub_hildreth_algo} are also performed here. In addition a series of positive relaxation parameters are defined  $\{ r^{(k)} \}$, as well as a control sequence $\{ i_k \}_{k=0}^\infty$ that is almost cyclic on $I=\{1,2,\ldots,m \}$.
+%
+%\paragraph{Iteration}\\\
+%
+%The iteration of the extended algorithm is moderately more complex than that of the basic algorithm. The calculation for iteration $k+1$ is,
+%\begin{gather}
+%    x^{(k+1)}=x^{(k)}+c^{(k)}A_{i_k}, \\
+%    z^{(k+1)}=z^{(k)}-c^{(k)}e_{i_k}, \\
+%    c^{(k)}=\min\Big( z_{i_k}^{(k)}, r^{(k)}\frac{b_{i_k}-\langle A_{i_k},x^{(k)}\rangle}{\|A_{i_k}\|^2} \Big),
+%\end{gather}
+%where the vector $e_i$ is a vector of zeros with $1$ in the $i$th position. Setting all relaxation parameters to $1$ and making the control sequence fully cyclic makes this formulation identical to that in (\ref{eqn:hildreth_iteration}).
+%
+%\td{This explanation needs improving.}.
+%The introduction of the cyclic control makes this slightly more difficult to understand. Understanding that each iteration deals with only a single row of the matrix $A$, and therefore only a single entry in the vector $z$ makes this simpler. 
+%
+%On each iteration the calculation within the $\min$ is made, this gives a scalar value scaled by the relaxation parameter. $c$ is selected to be the minimum of the two (ensuring that the iteration does not move $x$ beyond the constraint defined by $A_i$). This value is used to modify the $i$th index of $z$ for the next iteration. The update on $x$ is more complex, 
+%
+%The almost cyclic control means that not every row is considered in order. Proof that this does not affect convergence is given in \cite{Lents1980EXTENSIONSPROGRAMMING}. The almost-cyclic control is highly beneficial as it reduces the likelihood that the algorithm falls into a pattern of projection between a pair of constraints with an acute angle between them. 
+%
+%This proof that the order does not affect convergence is very useful, as it lays the groundwork for considering how this problem can be parallelised over multiple processors by considering each row simultaneously, then combining the results for the next iteration.
+
+\subsection{Mesh Adaptive Direct Search}\label{sub_MADS}
+\ac{MADS} is a blackbox optimisation algorithm, and is suitable in cases where analytical knowledge of the objective function and constraints are not available. \ac{MADS} is also suited to non-smooth functions. The \ac{MADS} algorithm \cite{Audet2007MeshOptimization} was first presented as an improvement on the \ac{GPS} class of algorithms \cite{Torczon1997ON}. \ac{GPS} is now defined as a special case of \ac{MADS}. The algorithm has also been shown to be effective on noisy or expensive problems.
+
+The chief of advantage of \ac{MADS} is that it is a blackbox algorithm, therefore no analytical knowledge of objective function or the constraints is needed whatsoever. The objective function can be a black box that takes a point input and returns a cost, and the constraints can just return a yes/no answer for any trial point. This allows the algorithm to be used in many situations that more traditional optimisation algorithms that need analytical knowledge would not be able to solve.
+
+\ac{MADS} describes a general class of algorithm with several published variations, and the algorithm is able to be configured to use each variation interchangeably. The initial publication of \ac{MADS} utilised a method of direction generation named \ac{LTMADS}, due to its use of semi-random lower triangular matrices \cite{Audet2007MeshOptimization}. A subsequent version named \ac{OrthoMADS} is an alternative that guarantees orthogonality in the generated directions, and is also deterministic \cite{Abramson2009Orthomads:Ions}. Both \ac{LTMADS} and \ac{OrthoMADS} have been implemented in this project, and will be discussed in Sections \ref{subsub:ltmads_algo} and \ref{subsub:orthomads_algo} respectively.
+
+The initial version of \ac{MADS} implemented constraints by only considering points that are valid for each constraint, these are defined as extreme barrier constraints. Later versions presented a modified algorithm that uses relaxable constraints \cite{Audet2009AProgramming}. This version of the algorithm works to minimise both the objective function, but also the violation of the constraints. These two constraint formulations are discussed in Sections \ref{subsub:mads_extreme_barrier} and \ref{subsub:mads_progressive_barrier} respectively.
+
+\subsubsection{MADS Structure}
+\paragraph{Overview}\\\
+
+Each iteration of \ac{MADS} has three main steps, \textit{search}, \textit{poll}, and \textit{update}. The first two steps are concerned with producing trial points that may offer an improvement over the current incumbent solution by decreasing cost (note that this is slightly complicated by progressive barrier constraints, discussed in Section \ref{subsub:mads_progressive_barrier}). The final step will update the internal stage of the algorithm based on the outcome of the evaluation of the trial points. This structure is shown by Algorithm \ref{algo:MADS_high_level}.
+
+\begin{algorithm}
+\caption{MADS Algorithm High-Level Overview}
+\label{algo:MADS_high_level}
+\begin{algorithmic}
+\STATE $\Omega$: The set of feasible points
+\STATE $f$: Objective function
+\STATE $k$: Iteration counter
+\STATE $x^{(k)}$: Incumbent point for iteration $k$
+\STATE $\Delta^m_k$: Mesh size parameter for iteration $k$
+\REQUIRE Initial point $x^{(0)} \in \Omega$, $k=1$, $\Delta^m_1=1$
+
+\REPEAT
+    \STATE $T$: Set of trial points from search algorithm.
+    \STATE $x^{(k)} = x^{(k-1)}$
+    \FOR{$t$ in $T$}
+        \IF{$t \in \Omega$ and $f(t) < f(x^{(k)})$}
+            \STATE $x^{(k)} = t$
+        \ENDIF
+    \ENDFOR
+    
+    \STATE $D$: Set of trial directions from poll algorithm.
+    \FOR{$d$ in $D$}
+        \STATE $p = x^{(k-1)} + \Delta^m_kd$
+        \IF{$p \in \Omega$ and $f(p) < f(x^{(k)})$}
+            \STATE $x^{(k)} = p$
+        \ENDIF
+    \ENDFOR
+    
+    \IF{$f(x^{(k)}) == f(x^{(k-1)})$}
+        \STATE $\Delta_{k+1}^m = \Delta_{k}^m \div 4$
+    \ELSIF{$f(x^{(k)}) < f(x^{(k-1)})$ \AND $\Delta_k^m \leq 0.25$}
+        \STATE $\Delta_{k+1}^m = \Delta_{k}^m \times 4$
+    \ELSE
+        \STATE $\Delta_{k+1}^m = \Delta_{k}^m$
+    \ENDIF
+\UNTIL{a stopping condition is met}
+
+\end{algorithmic}
+\end{algorithm}
+
+\paragraph{Mesh}\\\
+
+The mesh is the core structure within \ac{MADS}, for iteration $k$ it is defined as the set,
+\begin{gather}
+    M_k = \bigcup_{x\in S_k} \{x + \Delta^m_kDz:z\in \mathbb{N}^{n_D}\},\label{eqn:mads_mesh}
+\end{gather}
+where $S_k$ is the set of points at which the objective function has been evaluated so far, $D$ is a finite set of $n_D$ directions ($D \subset \mathbb{R}^n$), $\Delta^m$ is a scalar named the mesh size parameter, and $n_D$ is the number of columns in $D$ (i.e. the number of unique directions in the set)\cite{Audet2007MeshOptimization}. $M_k$ is not constructed by the algorithm, but \ac{MADS} guarantees that all points generated will lie on the mesh, and therefore the definition of the mesh is able to be used in proofs of convergence.
+
+It is simple to ensure that this requirement for all points to be on the mesh is met. All $x\in S_k$ by definition must belong on the mesh, $\Delta^m$ and $D$ define the mesh, leaving the only requirement to be that $z$ is an integer vector (making the newly generated point $x$ plus a linear combination of the directions in $D$, and scaled by $\Delta^m$).
+
+\ac{MADS} defines an additional parameter, the poll size parameter $\Delta^p\in \mathbb{R}_+$. This defines the the magnitude of the maximum distance between the incumbent point and the new trial points. 
+
+The poll parameter is subject to a pair of conditions:
+\begin{itemize}
+    \item $\Delta^m_k \leq \Delta^p_k \forall k$
+    \item $\lim\limits_{k\in K}\Delta^m_k=0$ if and only if $\lim\limits_{k\in K}\Delta^p_k=0$ for any infinite subset of indicies $K$.
+\end{itemize}
+
+The maximum distance around the incumbent point defined by the poll size parameter is defined as the poll frame. This is illustrated in Figure \ref{fig:mesh}. The bold lines represent the frame defined by $\Delta^p_k$. The intersection of all other lines defines the current mesh (where the distance between points is given by $\Delta^m_k$). As can be seen, the trial poll points $p_i$ all lie on the mesh on points within the poll frame. This freedom in positioning within the frame allows for many directions to be explored.
+
+\begin{figure}[thb]
+    \centering
+    \includesvg[width=0.7\textwidth]{media/mesh.svg}
+    \caption{An illustration of poll points $p_i$ in a frame around incumbent point $x_k$. In this case $\Delta^m_k = \frac{\Delta^p_k}{4}$ (Figure adapted from \cite{Audet2007MeshOptimization})}
+    \label{fig:mesh}
+\end{figure}
+
+\paragraph{Search}\\\ \label{par:mads_search}
+
+The first step of the \ac{MADS} algorithm is named the search step. This concerns the process of generating trial points and evaluating them. There is no requirements for how these are generated, apart from them being on the mesh. 
+
+This flexibility allows for the search stage to be tailored to the particular problem (e.g. exploiting a known structure of the problem), use a generic step (e.g. generating points along the direction that the previous iteration travelled), or ignoring the step completely.
+
+The flexibility of this step is problematic for proving the convergence properties of \ac{MADS}, however that is outside the scope of this report.
+
+If an improved point is generated by the search step it is possible to skip the following poll step entirely, or continue to attempt to find a further improved point.
+
+\paragraph{Poll} \\\
+
+The poll step defines an exploration of the area directly surrounding the current incumbent point by generating a set of directions to investigate. 
+
+On iteration $k$ the poll algorithm returns a set of poll directions $D_k$. A set of trial points, $P_k$, is generated from $D_k$ with,
+\begin{gather}
+    P_k = \big\{x + \Delta^m_kd : d\in D_k\big\} \subset M_k,\label{eqn:mads_poll_points}
+\end{gather}
+where the mesh size parameter $\Delta^m_k$ sets the distance between the current incumbent point and the trial point.
+
+The poll step must meet a set of requirements to ensure that the trial directions will result in a point that is on the mesh, and that the generated directions will allow the algorithm to. This is the reason that an algorithm such as \ac{LTMADS} must be used rather than a simpler technique (e.g. random direction sampling). Note that these other techniques may still be effective, it would just not fit the definition (and therefore convergence proofs) of \ac{MADS}.
+
+\paragraph{Update} \\\
+
+The `adaptive' term within the name \ac{MADS} refers to the ability of the algorithm to change the resolution of the mesh by modifying the value of the mesh and poll size parameters. As these parameters define the distance between points on the mesh, it essentially controls how fine or coarse the mesh is. It is intuitive to see how a finer mesh would allow improvements to be found when the objective function is on a plateau (for example, when close to a local minimum), while a coarse mesh would allow for fast convergence (for example, when on a steep slope of the objective function. However if these situations were reversed, the algorithm would behave poorly (a small update on a steep slope would give slow convergence, and a large update on a plateau would be unlikely to find a minimum). The update to the mesh size algorithm to adapt to the objective function at the current point.
+
+In general the update rule is relatively arbitrary (within the requirements previously outlined) and depends on the poll step of the algorithm. For both poll steps considered in this project (\ac{LTMADS} and \ac{OrthoMADS}) the update rule to the mesh size is the same. The \textit{mesh index} variable, $l_k$, is defined, and initialised as $l_0=0$. This is then updated on each iteration as, 
+\begin{gather}\label{eqn:mads_eb_mesh_index_update}   
+    l_{k+1} = 
+        \begin{cases}
+        l_k-1 & \text{on a successful iteration},\\
+        l_k+1 & \text{on an unsuccessful iteration}.
+        \end{cases}
+\end{gather}
+The mesh index is then used to define the mesh and poll size parameters, 
+\begin{gather}
+    \Delta_k^m = \min\{{1, 4^{-l_k}}\} \quad \text{and} \quad \Delta^p_k = 2^{-l_k}.\label{eqn:mads_eb_mesh_update}
+\end{gather}
+Therefore, when a reduced cost point is found (a successful iteration) the value of $\Delta^m$ increases by a factor of $4$ (up to a maximum of $1$). This encourages fast convergence, as larger steps are taken while new points are being found. When unsuccessful (no improved points were found), $\Delta^m$ is reduced by a factor of $4$. This increased resolution allows a nearer search space to the incumbent point, hopefully allowing further improvements. This is likewise the case with $\Delta^p$, but with the variation being by a factor of $2$, and no maximum size limit. This update rule can be seen at the bottom of Algorithm \ref{algo:MADS_high_level}.
+
+Note that a minimum size of the mesh is not limited by the algorithm, but is limited by the numerical precision of the platform the algorithms runs on. 
+
+%More details of this are given when discussing portability of code in Section \ref{sub:ds_portability}.
+
+\subsubsection{LTMADS}\label{subsub:ltmads_algo}
+\ac{LTMADS} is the poll method proposed in the original paper for \ac{MADS} \cite{Audet2007MeshOptimization}. This method utilises a semi-randomly generated lower triangular matrix to create a basis, from which poll directions are extracted. 
+
+\ac{LTMADS} requires a direction to be maintained for each mesh size that will always be present whenever that mesh size is used. The generation of this direction is given in Algorithm \ref{algo:LTMADS_dirs}. This procedure returns the vector $b_l$ and the index, $\hat{i}_l$, that indicates the position of the absolute maximum entry in $b_l$. 
+
+\begin{algorithm}
+\caption{LTMADS initial direction generation}
+\label{algo:LTMADS_dirs}
+\begin{algorithmic}
+\STATE $l$: The current mesh index
+\STATE $n$: The problem dimension
+\STATE $b_l$: The saved direction for index $l$
+\STATE $\hat{i}_l$: The index of the absolute max value of $b_l$
+\IF{$b_l$ exists for $l$}
+    \RETURN $(b_l, \hat{i}_l)$
+\ELSE
+    \STATE Let $\hat{i}_l \in N$ where $N = \{1,\ldots,n\}$
+    \STATE Set $b_l[\hat{i}_l]=\pm2^l$
+    \STATE Set $b_l[i]$ to a value in $[-2^l+1,2^l-1]$ for $i\in N\setminus \{\hat{i}_l\}$
+    \RETURN $(b_l, \hat{i}_l)$
+\ENDIF
+\end{algorithmic}
+\end{algorithm}
+
+From the vector $b_l$ a positive basis of directions is generated with the procedure given in Algorithm \ref{algo:LTMADS_basis}.
+
+\begin{algorithm}
+\caption{LTMADS Direction Basis Generation}
+\label{algo:LTMADS_basis}
+\begin{algorithmic}
+\STATE $l$: The current mesh index
+\STATE $n$: The problem dimension
+\STATE $b$: The saved direction for index $l$
+\STATE $\hat{i}$: The index of the absolute max value of $b_l$
+\REQUIRE $b$ and $\hat{i}$ from Algorithm \ref{algo:LTMADS_dirs}\\
+    \COMMENT{Construct basis in $\mathbb{R}^{n-1}$}
+    \STATE Let $L$ be an $(n-1)\times(n-1)$ LT matrix 
+    \STATE Set diagonal entries of $L$ to $\pm2^l$
+    \STATE Set each value in lower triangle $L$ to a random value from the range $[-2^l+1,2^l-1]$
+    
+    \COMMENT{Construct basis in $\mathbb{R}^n$}
+    \STATE Let matrix $B$ be formed from a random permutation of the rows of $L$
+    \STATE Insert a row of $0$s at index $\hat{i}$ of $B$
+    \STATE Append $b$ as a column of $B$
+    \STATE Randomly permute the columns of $B$    
+    
+    \COMMENT{Completion to a positive base}
+    \IF{a minimal basis is desired ($n+1$ directions)}
+        \RETURN $\begin{bmatrix}B & d\end{bmatrix}$ where  $d_i = -\sum_{j\in n}B^\prime_{ij}$
+    \ELSIF{a maximal basis is desired ($2n$ directions)}
+        \RETURN $\begin{bmatrix}B & -B\end{bmatrix}$
+    \ENDIF
+\end{algorithmic}
+\end{algorithm}
+
+This set of directions is then utilised to generate trial points with (\ref{eqn:mads_poll_points}).
+
+The randomness of the basis generation within \ac{LTMADS} is both a benefit and a downside. Each time the algorithm is run, a different set of directions will be produced, and therefore a different path the optimum solution will be found. Depending on the directions that are generated the algorithm can converge very quickly, or can take a long time.
+
+\subsubsection{OrthoMADS}\label{subsub:orthomads_algo}
+
+\ac{OrthoMADS} was designed after \ac{LTMADS} with the intention of providing a guarantee of orthogonality to the generated poll directions, as well as being deterministic in its results \cite{Abramson2009Orthomads:Ions}. In many tests \ac{OrthoMADS} has been demonstrated to provide superior results than the medium result of several \ac{LTMADS} runs. \ac{OrthoMADS} will also produce the same directions every time it is run, this allows only a single run to be performed, where previously \ac{LTMADS} may need several to find a good minimum. 
+
+It should be noted that \ac{LTMADS} has the potential to outperform \ac{OrthoMADS} due to its random selection of directions. However it can take many runs to achieve this superior result.
+
+Again, this section will give a brief overview of the steps required to generate the poll directions used in \ac{OrthoMADS}. See the \ac{OrthoMADS} paper for a far more in-depth analysis \cite{Abramson2009Orthomads:Ions}. 
+
+
+\paragraph{Halton Sequences}\\\
+
+\ac{OrthoMADS} is based off the use of \textit{Halton Sequences} \cite{HaltonOnIntegrals}. These are a group of quasi-random vector sequences that have deterministic generation procedures. 
+
+\ac{OrthoMADS} utilises the simplest Halton sequence. The $t^\text{th}$ index of this sequence is described by the vector $u_t$,
+\begin{gather}\label{eqn:halton_sequence}
+    u_t = \begin{bmatrix} u_{t,p_1} & \ldots & u_{t,p_n} \end{bmatrix}^T, \quad
+    u_{t,p} = \sum^\infty_{r=0}\frac{a_{t,r,p}}{p^{1+r}},
+\end{gather}
+where $p_i$ is the $i$th prime number, and where $a_{t,r,p}$ contains the coefficients that define the base $p$ expansion of $t$. $t$ is the parameter that \ac{OrthoMADS} uses to control the generated directions.
+
+$t$ is the Halton index (i.e. the index within the sequence), and the problem dimension, $n$, defines the maximum prime number, $p_n$, as well as the dimension of each Halton entry. Halton sequences show a degree of linear dependence between their first few entries, to avoid this the sequence is started with $t=p_n$, which is labelled the \textit{Halton seed}, and denoted as $t_0$.
+
+\paragraph{Adjusted Halton Sequence}\\\
+
+On their own, Halton sequences do not meet the requirements for being poll directions (for instance, they are non-integer vectors). Therefore an adjustment step is performed to scale, translate, and round each $u_t$. 
+
+Each vector $u_t$ is transformed to a corresponding function $q_t(\alpha)$,
+\begin{gather}
+    q_t(\alpha) = \text{round}\Big(\alpha \frac{2u_t - e}{\|2u_t-e\|}\Big),\label{eqn:halton_adjust}
+\end{gather}
+where $e\in\mathbb{R}^n$ has every element valued as $1$. $\alpha$ is then selected as the scalar argument that satisfies,
+\begin{subequations}
+\begin{gather}
+    \argmax_{\alpha\in\mathbb{R}_+}\|q_t(\alpha)\|\\
+    \text{s.t.} \quad \|q_t(\alpha)\| \leq 2^{\frac{|l|}{2}}.
+\end{gather}
+\end{subequations}
+
+\paragraph{Orthogonal Integer Basis Construction}\\\
+
+The final step in is constructing an orthogonal integer basis from the vector $q_t$. This is performed with the symmetric, scaled, Household transform \cite{HouseholderUnitaryMatrix}.
+\begin{gather}
+    H = \|q\|^2(I_n-2vv^T), \quad v = \frac{q}{\|q\|}.\label{eqn:householder}
+\end{gather}
+Where $I_n$ is the identity matrix in $\mathbb{R}^n$.
+
+Finally the basis is formed by setting,
+\begin{gather}
+    D_k = \begin{bmatrix} H & -H \end{bmatrix},
+\end{gather}
+and trial points are formulated with (\ref{eqn:mads_poll_points}).
+
+\subsubsection{Extreme Barrier Constraints}\label{subsub:mads_extreme_barrier}
+So far the discussion of the \ac{MADS} algorithm only considered the problem, 
+\begin{gather}
+    \min_x f(x), \quad x\in \mathbb{R}^n.
+\end{gather}
+However \ac{MADS} is an algorithm designed for solving constrained optimisation problems. Therefore the objective function is redefined as,
+\begin{gather}
+    f_\Omega(x) =
+    \begin{cases}
+        f(x) & x \in \Omega, \\ 
+        \infty & \text{otherwise},
+    \end{cases}
+\end{gather}
+where $\Omega$ is the feasible subset of $\mathbb{R}^n$. This ensures that only feasible values of $x$ are ever considered, as $f_\Omega$ will always evaluate to $\infty$ otherwise. The constraints that define the feasible set $\Omega$ are named \textit{extreme barrier constraints} and the algorithm that uses them is named \ac{MADS-EB}.
+
+The effect of these constraints is that the algorithm will not even consider evaluating any points that are not in the feasible set, and will immediately discard them. 
+
+\subsubsection{Progressive Barrier Constraints}\label{subsub:mads_progressive_barrier}
+The most recent aspect of the \ac{MADS} algorithm to be considered in this project is the \textit{progressive barrier constraint} formulation \cite{Audet2009AProgramming}, or \ac{MADS-PB}. This is an additional kind of constraint that allows infeasible points to be considered, but modifies the algorithm to select for new incumbent points that minimise the constraint violation.
+
+There are multiple advantages to this, with some of the most interesting being that this method removes the requirement for having a feasible initial point, as well as potentially allowing for a more direct route to the feasible optimum, therefore needing less objective function evaluations.
+
+This formulation requires an alteration to the definition of a constraint for \ac{MADS}. The constraints may still be blackbox functions, but must now return a value indicating the amount a trial point violates the constraint. A trial point that violates the constraint should return a positive number, and vice versa.
+
+As before, this problem considers the minimisation of the function,
+\begin{gather}
+    \min_{x\in\Omega} f(x).
+\end{gather}
+Subject to a set of $J$ constraints and the feasible set $\Omega$,
+\begin{gather}
+    \Omega = \{x\in X: c_j(x) \leq 0, j\in J\},
+\end{gather}
+where $c_j(x)$ is the constraint violation function of the $j$th constraint, and $X\subset \mathbb{R}^n$ is the set of points defined by constraints that must always be satisfied. This makes $\Omega$ the set of points that satisfy every constraint. \ac{MADS-PB} requires that $x\in\Omega$ is enforced only for the final considered point.
+
+\paragraph{Overall Constraint Violation Function}\\\
+
+All constraints are combined to form the overall constraint violation function,
+\begin{gather}
+    h(x) = 
+    \begin{cases} \label{eqn:progressive_barrier_constraint}
+    \sum\limits_{j\in J}(\max(c_j(x),0))^2 & x\in X,\\
+    \infty & \text{otherwise}.
+    \end{cases}
+\end{gather}
+This ensures that any points that do not satisfy any unrelaxable constraints evaluate to a cost of $\infty$, a point that satisfies every constraint (i.e. $x\in \Omega$) provides a cost of $0$, and points that satisfy unrelaxable constraints but not relaxable ones provide a cost in the range $(0,\infty)$.
+
+The barrier threshold $h_k^{\max}$ is now introduced. This variable sets a limit on the maximum value of $h(x)$, meaning that the total constraint violation amount can be controlled. The core of \ac{MADS-PB} is that this threshold is reduced until a point is found that is both optimal and feasible.
+
+\paragraph{Iteration Results}\\\
+
+In previous algorithms the result of an iteration was either defined to be a success or a failure. \ac{MADS-PB} complicates this slightly due to now attempting to select for points that are both feasible and an improvement. To this end, three iteration outcomes are defined: \textit{dominating}, \textit{improving}, and \textit{unsuccessful}.
+
+\textit{For the following description, we borrow the notation $y \prec x$ from \cite{Audet2009AProgramming} to indicate that either $h(y) < h(x)$ and $f(y)\leq f(x)$ or that $h(y)\leq h(x)$ and $f(y) < f(x)$.}
+\begin{itemize}
+    \item \textit{Dominating} iterations are iterations in which a trial point, $x_{k+1}$, is found that has,
+    \begin{gather}
+        h(x_{k+1})=0 \quad \text{and} \quad f(x_{k+1}) < f(x_k),
+    \end{gather}
+    or has,
+    \begin{gather}
+        h(x_{k+1})>0 \quad \text{and} \quad x_{k+1}\prec x_k.
+    \end{gather}
+    \item \textit{Improving} iterations do not satisfy the requirements of a dominating iteration, but do find an infeasible solution for which the constraint violation is reduced,
+    \begin{gather}
+        0 < h(x_{k+1}) < h(x_k) \quad \text{and} \quad f(x_{k+1}) > f(x_k).
+    \end{gather}
+    
+    \item \textit{Unsuccessful} iterations generate no points that are dominating or improving.
+\end{itemize}
+
+Ideally every generated point would be dominating, resulting in a decrease in either the objective cost or constraint violation while leaving the other constant (or also decreasing). Realistically this is not possible on every iteration. But by allowing the improving iterations as an outcome, the algorithm ensures that generated points will move towards being feasible at the cost of optimiality.
+
+\paragraph{Update}\\\
+
+As the update rules for the mesh and poll size parameters (\ref{eqn:mads_eb_mesh_update}) depend on the outcome of the iteration (\ref{eqn:mads_eb_mesh_index_update}), a modification to these update rules is required for \ac{MADS-PB}. The mesh index is redefined as:
+\begin{gather}\label{eqn:mads_pb_mesh_index_update}   
+    l_{k+1} = 
+        \begin{cases}
+        l_k-1 & \text{on a dominating iteration},\\
+        l_k   & \text{on an improving iteration},\\
+        l_k+1 & \text{on an unsuccessful iteration}.
+        \end{cases}
+\end{gather}
+
+Geometrically this may be interpreted as shrinking the mesh only when a dominating point is found, as the objective function is improving. As the improving iteration is, by definition, not moving in an improved direction on the objective function it is not desirable to shrink the mesh despite the iteration counting as a success.
+
+Finally $h^{max}$ also must be updated to continue convergence towards feasible solutions. 
+\begin{gather}\label{eqn:hmax_update}
+    h_{k+1}^{max} = 
+    \begin{cases}   
+        \max\limits_{x\in V} \{h(x) : h(x) < h^I\} & \text{if the iteration is improving}, \\
+        h^I_k & \text{otherwise}.
+    \end{cases}
+\end{gather}
+
+Where $V$ is the set of all considered points, and $h^I$ is the selected new infeasible incumbent point. Therefore this update reduces $h^{max}$ to ensure future results become closer to feasible. In the case that the iteration is improving (i.e. the new infeasible incumbent point increases the cost but improves feasibility) then a further reduced value of $h^{max}$ is selected. 

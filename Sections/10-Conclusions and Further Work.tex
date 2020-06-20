@@ -1,0 +1,21 @@
+\section{Conclusions and Further Work}\label{sec:conclusion}
+
+\subsection{Evaluation}
+The requirements of each of the packages can broadly be divided into two types. The first of these kinds of requirements are those related to performance. Section \ref{sec:testing} illustrated that the performance requirements of the packages have generally been met, with a few caveats. 
+
+For example, the build-times shown when testing \ac{RAM} are incredibly detrimental to the overall utility of the package. However this was expected due to the use of the dual formulation. For Hildreth's algorithm the desired performance, and performance scaling, was demonstrated by the optimisation times. This illustrates that this package, as well as Hildreth's algorithm and row action methods, are useful algorithms for solving difficult quadratic problems, and stack up well against existing algorithms. 
+
+\ac{DS} has also shown that it has met its intended purpose, by implementing the desired algorithms with a good level of performance, while managing to maintain a design that easily allows for algorithms to be modified or added to, without even having to restart a Julia session
+
+\subsection{Future Work}
+Throughout the discussion on the design and testing of \ac{RAM} and \ac{DS} several points where designs could be extended or improved have been noted. This section will close the report by giving an overview of the next steps each of the packages can take.
+
+For \ac{RAM}, the first major update that should be made is the addition of constraint modification. This feature was actually present in prototype throughout much of the development of the package, however a late redesign of the storage of the constraints made this incompatible. Including this again, in a manner that allows for problems to not be fully rebuilt would be a strong improvement to the package. 
+
+Additionally for RAM, finding a solution to the problems discussed in \ref{subsub:ram_objective} related to the storage of a sparse factorisation of the problem variable would lead to reduced memory utilisation and improved build times.
+
+For \ac{DS} the improvements to the cache discussed in \ref{sub:ds_cache} would be a very useful addition, possibly integrating the constraint cache into it. The cache would also benefit from memory management tools, limiting the maximum size it can grow to.
+
+Finally, \ac{DS} includes a small section for reporting statistics and information about the solve that it is performing (this was not discussed due to it being in a very basic/prototype form). Formalising the design of this subsection of the program, along with the store/load of configurations (including the cache contents) would greatly benefit the utility of the package.
+
+\subsection{Summary}

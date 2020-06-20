@@ -1,0 +1,113 @@
+\section{Testing Methodology}\label{sec:testing}
+
+In this section the requirements of each package will be revisited, and a set of tests discussed that verify that these requirements have been bet. In addition, the testing environment will be discussed along with some features of Julia that are useful for testing.
+
+\subsection{Testing Hardware}
+
+When comparing a set of optimisation software packages the main performance criteria that can be measured is the runtime of the algorithms, as well as the memory utilisation. This can be used to indicate the areas in which a solver is more or less capable. For example, if a piece of software took 50\% longer to complete an optimisation operation but required only 50\% of the memory compared to another, then it may be more preferable in a resource limited environment despite taking longer.
+
+A factor that is not as import in the testing environment is the speed of the individual processors, as this applies a consistent scaling across each program under test. This then gives two main requirements of the testing environment: total memory and number of processors. 
+
+The memory must be high enough to not become saturated during testing. If the memory becomes full then the operating system will cause a swap operation to take place where memory is copied to disk. This results in a massive decrease in performance. For DS this is not problematic, the only part of the algorithm that may take a large amount of memory is the cache, and that can be limited in size without having a huge impact in performance. However for RAM this may prove to be a problem when testing on very large problems, despite the use of sparse matrices.
+
+The number of processors sets a maximum limit on the testable parallelism of the algorithms . If an algorithm can have a high degree of parallelism then having a large number of processors available will allow this characteristic to be demonstrated. Ideally the number of processors should be high enough to allow any limitations to be shown, and to illustrate the scaling behaviour of a piece of software. 
+
+The testing machine in use by this project is a server that has a pair of Intel Xeon E5-2630v4 CPUs. These each provide 10 physical cores, and 20 logical cores (using to Intel's hyperthreading technology). Assuming that an algorithm shows perfect parallel scaling and there are no performances losses due to data transfer between the two CPUs, these processors can allow for perfect scaling for up to 20 parallel operations (the number of hardware cores). This would then be followed by good scaling up to 40 parallel operations (the number of logical cores). This is due to each pair of hyperthreaded logical cores sharing many resources and therefore not being able to perform as well as a pair of physical cores. 
+
+Unfortunately the distributing of processes is handled by the operating system, and there is no guarantee that a pair of processes will not be distributed to a single physical core even if other physical cores are free. Due to this, it is expected that the `perfect' algorithm would show linear scaling, but less than 1:1.
+
+The server provides 250GB of memory. This is sufficient for the test problems in use by this project. 
+
+It is also worth considering that this server is used by multiple other users. To this end it needs to be considered how the tests are impacted by resource utilisation by others, and also how the tests affect the resources available to others. For most tests a minimal number of cores will be utilised. The large number of available processors therefore gives a high probability that neither of the previous issues will occur. The small risk can then be mitigated by monitoring the server's level of resource utilisation, and performing multiple runs of each test.
+
+Tests that require a high number of processors does require more care. Again this can be mitigated by monitoring the resource utilisation of the server, with extra care taken to time the tests when other users are not running their own work, and to ensure the test does not use 100\% of the available resources.
+
+\subsection{Testing Software}
+While it would be possible to manually run tests, this is work intensive and increases the liklihood of introducing errors. The solution to this is creating a benchmark suite that forms tests in a consistent way and saves data in a standard format. 
+
+For RAM, the use of JuMP makes this process very simple, especially for comparisons against other solvers. A problem can be loaded from files as a JuMP model, and then the problem can be solved several times for each desired test, be that different configurations of RAM, or different solvers entirely. All required statistics can then be gathered and saved automatically. 
+
+For DS, all the required problems are available in the SIF format (from the CUTEst problem set). As there is not currently a modern SIF interpreter package in Julia, a Python package is used to implement the wrapper \cite{PyCUTEst}, and the Julia's python interface \cite{JuliaPyCall} calls the SIF files. Unfortunately this approach could not be applied to RAM, as the interface is not able to load full matrices in the manner that RAM requires.  
+
+For both RAM and DS, testing and benchmarking showed the need for an internal record of times was needed to accurately profile the code (due to different problem stages requiring different timings). Therefore each had a \texttt{Statistics} component added to their main problem, descriptions. This stores any required information about timings, and is accessed by the benchmarking suite to gather internal information.
+
+In addition it is a necessary feature to be able to configure the number of threads that Julia is able to use. This is not a modification that can be made within a running Julia process, and is configured by an environment variable that Julia reads on startup. This requires the addition of a pair of scripts. The first is bash script that configures Julia with the requisite number of threads enabled and then runs the second script for each configuration. The second is a Julia program that calls runs the benchmarks themselves, and runs through each of the desired benchmarks.
+
+\subsection{RowActionMethods.jl Tests}
+
+A summary of the requirements of RAM is as follows:
+
+\begin{enumerate}
+    \item Be designed to be simple to add new objectives, constraints, and algorithms. 
+    \item Solve problems with linear constraints and quadratic objective functions.
+    \item Take advantage of sparse matrices.
+    \item Offer performance comparable to other quadratic solvers.
+    \item Demonstrate good scaling as the number of available processors increases. 
+\end{enumerate}
+
+Requirement one has been demonstrated in Section \ref{section_design_ram}. Requirement two is illustrated by the choice of tests, to be covered later. Requirement three has been shown by the choice of data structures in the design, but will also be shown in a set of tests where the sparse matrices are swapped out for dense matrices.
+
+The majority of tests will relate to requirements four and five. The first group of tests will compare RAM against other QP solvers, illustrating its performance and its ability to find optimal points in a competitive time for a variety of constrained QP problems. This will also show how the performance scales with the number of iterations, and illustrate the key downside of using the dual formulation required for Hildreth's method.
+
+Finally, to illustrate the scaling property of requirement five, a subset of previous tests will be run with a range of threading configurations. This will be shown for a range of test sizes, and compared to the single threaded implementation.
+
+\subsubsection{Testset}
+
+The common set of tests for evaluating optimisation algorithms is the CUTEst testset. Unfortunately these tests are available only in the SIF format, for which Julia (and more specifically, JuMP) does not have a parser for. Fortunately a package exists for parsing MPS files, a subset of SIF that describes QP problems. A group of QP problems in the MPS format is available from the CUTEst project, the Maros and Meszaros Convex Quadratic Programming Test Problem Set \cite{1997A}.
+
+Of this set, six tests have been chosen for inclusion in this report to demonstrate the performance and behaviour of RAM. The details of these tests are shown in Table \ref{table:ram_tests}. The Maros and Meszaros test repository contains over 100 quadratic programming problems with which all have positive semi-definite problem matrices. As RAM is only compatible with positive-definite matrices, the tests were filtered to only include those with this format.
+
+The final set of tests were chosen to show performance with several different contexts. \textit{HS21} and \textit{HS118} represent performance on small problems. The two \textit{LISWET} problems and \textit{AUG2DC} show performance on larger problems. And finally \textit{CONT-100} was selected to show a case where RAM performs very poorly.
+
+\begin{table}[h] 
+\centering
+\begin{tabular}{llllllll} \toprule
+    {Test}      & {Variables} & {Constraints} \\ \midrule
+    {HS21}      & 2 & 1 \\
+    {HS118}     & 15 & 17 \\ 
+    {LISWET1}   & 10002 & 10000 \\  
+    {LISWET2}   & 10002 & 10000 \\ 
+    {AUG2DC}    & 20200 & 10000 \\ 
+    {CONT-100}  & 10197 & 9801 \\ \bottomrule
+\end{tabular}
+    \caption{\label{table:ram_tests} RowActionMethods.jl Testset}
+\end{table}
+
+\subsection{DirectSearch.jl Tests}
+The requirements of DS are as follows:
+\begin{enumerate}
+    \item Implement the LTMADS, OrthoMADS, and progressive barrier algorithms
+    \item Required number of function evaluations should be similar to NOMAD
+    \item Final result should be found in a similar time to NOMAD
+    \item It should be possible to swap in and out different sub-algorithms.
+    \item It should be possible to define new kinds of constraints easily
+\end{enumerate}
+
+Requirements one, five, and six have been shown in the design section. This section will discuss the tests that have been performed to prove requirements two and three. 
+
+All the tests used are part of the CUTEst problem set. Julia does have an internface to CUTEst \cite{JuliaSmoothOptimizers/CUTEst.jl:Interface}, however this package was not used. Julia has a small delay whenever it is loaded (as it is intended to be used in a single session). This means that utilising a Julia interface to CUTEst would be unfair when comparing to NOMAD as DS would only need to load a single Julia session, and NOMAD would need one for every function evaluation. 
+
+For these reasons a Python interface, PyCUTEst \cite{PyCUTEst}, is used instead. This will apply the same overhead to both DS and NOMAD, as there is no performance difference between calling Python code from the terminal and via Julia's PyCall package \cite{JuliaPyCall}.
+
+\subsubsection{Testset}
+
+The paper that introduces OrthoMADS \cite{Abramson2009Orthomads:Ions} includes a large group of tests that compare OrthoMADS to LTMADS, as well as GPS (the precursor algorithm to MADS). As the results of these tests are available for cross-referencing, a subset of these will be used.
+
+Ideally the entire test-set would have been used, however it was not possible to find several of the tests in a format that could easily be adapted for benchmarking. Therefore the subset of these tests that are present in CUTEst have been used. 
+
+Three classes of tests are to be used for evaluation and comparison, smooth unconstrained, nonsmooth unconstrained, and constrained problems. A pair of tests is included for each category:
+
+
+\begin{table}[h] 
+\centering
+\begin{tabular}{llllllll} \toprule
+    {Type} & {Test}      & {Variables} &   \\ \midrule
+    Smooth Unconstrained & {HS21}      & 2 & \\
+    & {HS118}     & 15 & \\ \midrule
+    Nonsmooth Unconstrained & {LISWET1}   & 10002 & \\  
+    & {LISWET2}   & 10002 & \\ \midrule
+    Constrained & {AUG2DC}    & 20200 & \\ 
+    & {CONT-100}  & 10197 & \\ \bottomrule
+\end{tabular}
+    \caption{\label{table:ram_tests} RowActionMethods.jl Testset}
+\end{table}

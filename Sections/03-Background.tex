@@ -1,0 +1,105 @@
+\section{Background}\label{sec:background}
+
+
+\subsection{Julia}\label{sub_julia}
+Julia is a relatively new programming language, with development beginning in 2009 and the 1.0.0 version being released in 2018. The following subsection will discuss some of the language features that set Julia apart from its contemporaries, and the interesting design patterns that the language allows for. Further reading on using Julia in a high-performance computing role can be found in \cite{Bezanson2017Julia:Computing}. Julia's most notable features are multiple dispatch, a powerful type system, and high performance. Each of these features will be discussed, and it will be demonstrated why these make Julia suitable for this project.
+
+\subsubsection{Multiple Dispatch}\label{subsub_multiple_disp}
+Julia's main design paradigm is based on multiple-dispatch, but the language also takes aspects of procedural and functional languages into its design. Multiple dispatch is the ability for the language to have multiple definitions of the same function (with the individual implementations being named methods), and call the most appropriate for given set of arguments. This gives the ability to design software in a very generic way, with the flexibility to extend it later with new functionality for new data types without changing any of the existing codebase. No additional selection or parsing logic needs adding, as Julia itself is able to call the appropriate function. 
+
+A simple example of multiple dispatch is shown in Listing \ref{lst:julia_md_demo}. Function \texttt{my\_add\_function} has been given three methods, differentiated by their argument types. The first takes two \texttt{Int}s and sums them. The second concatenates two \texttt{String}s (\texttt{*} is used for string concatenation in Julia). And the third takes a \texttt{String} and an \texttt{Int}, converts the \texttt{Int} to a string and concatenates them. Listing \ref{lst:julia_md_demo_op} shows the output of calling these functions. It is clear that a different function is called by providing different arguments.
+
+\lstinputlisting[caption={Three implementations of the same function},label={lst:julia_md_demo},captionpos=b,linerange={1-11}]{Code/example_code/multiple_dispatch_example.jl}
+
+\lstinputlisting[caption={Output of the multiple dispatch example},label={lst:julia_md_demo_op},captionpos=b,linerange={13-20}]{Code/example_code/multiple_dispatch_example.jl}
+
+
+In this project multiple dispatch is used in several different ways, with the main one being \ac{API} design. Each package defines \ac{API}s using specified functions. Algorithms within the packages then implement the \ac{API} via providing their own definitions of these functions. These are then automatically compatible with the rest of the package. This is used extensively, and is the main design pattern used throughout the project.
+
+\subsubsection{Type System}
+A type system is a programming language's way of recognising the internal representation of data within a program. C requires each variable to have its type explicitly defined whereas Python doesn't have a mechanism for specifying types, instead interpreting types from the code directly. In many ways Julia can operate like Python, with types of variables being interpreted. However, the type system of Julia is actually highly complex, and one of the most useful features of the language.
+
+Julia defines its types in a tree, with each type inheriting from another. At the top of this tree is the \texttt{Any} type. A highly simplified diagram of this type hierarchy is shown in Figure \ref{fig:type_hierarchy}. The \texttt{Any}, \texttt{Number}, and \texttt{Int} nodes are named abstract types, with the others being named concrete types. Abstract types cannot be directly instantiated (i.e. they do not describe a pattern of bits that represents data within Julia). However, they can be used as a `catchall' description. For example, in Listing \ref{lst:julia_md_demo} the functions with \texttt{Int} arguments are able to accept variables of types \texttt{Int16}, \texttt{Int32}, or \texttt{Int64}. Likewise, a function could have an argument of type \texttt{Number}, and be valid for both \texttt{Float} and \texttt{Int} types.
+
+\begin{figure}[h]
+    \Tree[.Any [.Number [.Int Int16 Int32 Int64 ] Float64 ]]
+    \caption{Simplified Type Hierarchy}
+    \label{fig:type_hierarchy}
+\end{figure}
+
+Users of Julia are able to define their own types, which are treated with the same level of precedence as the default types of the language. This is crucial for using multiple dispatch within a codebase. A user can define an abstract type with the \texttt{abstract type} keyword, or a concrete type with the \texttt{struct} keyword. Example of custom types that define a tree are shown in Listing \ref{lst:julia_custom_types}. The abstract type \texttt{Node} has three subtypes, \texttt{BinaryNode}, \texttt{NaryNode}, and \texttt{EndNode} (the syntax \texttt{<:} is used to denote a subtype). These types can now be used in exactly the same way as any default type in Julia. Note how the children of \texttt{BinaryNode} and \texttt{NaryNode} are of type \texttt{Node}. This allows any kind of node to be a child, and a new kind of node could easily be defined and used with no changes to the existing types.
+
+\lstinputlisting[caption={Custom types in Julia},label={lst:julia_custom_types},captionpos=b,linerange={1-14}]{Code/example_code/custom_type_example.jl}
+
+As an example of using these types (and as another showcase of multiple dispatch) see Listing \ref{lst:julia_custom_types_usage}. The \texttt{TraverseTree} function has an implementation for each of the appropriate node types, and Julia is able to dispatch on the custom types just as it would with any default type.
+
+\lstinputlisting[caption={Usage of custom types},label={lst:julia_custom_types_usage},captionpos=b,linerange={16-27}]{Code/example_code/custom_type_example.jl}
+
+As is shown in \texttt{BinaryNode}, a custom type is able to contain more than a single value. This is used extensively in both \ac{RAM} and \ac{DS}, which both use a single type to define the current state of an optimisation problem. Listing \ref{lst:orthomads_composite} details a moderately sized example from the DirectSearch.jl codebase.
+
+This example shows how the state of an \ac{OrthoMADS} process is stored. This example also shows two other important concepts, constructors and parametric types. The function that is shown inside this struct is known as its constructor, this allows operations to be done on input data, and default values used. For example, in this case, a call to \texttt{OrthoMADS} need only specify the dimension of the problem (\texttt{N}), and the constructor sets all the other required variables. 
+
+The \texttt{\{T\}} syntax shown here shows that \texttt{OrthoMADS} is a parametric type. This means that the types noted with \texttt{T} have a variable type that is decided when the struct is instantiated. For example, specifying \texttt{OrthoMADS\{Float32,Int32\}(4)} will describe a 4 dimensional \ac{OrthoMADS} instance that uses 32-bit numbers internally. An additional constructor function above the main is used to give a default value of \texttt{Float64} and \texttt{Int64} for the parametric types, as this would be the desired value for the majority of users. The parametric nature is included as it will make it simpler to adapt this code to run in a more specialised environment, for example as embedded code running on a microcontroller.
+
+\lstinputlisting[caption={Composite type that describes \ac{OrthoMADS}},label={lst:orthomads_composite},captionpos=b]{Code/example_code/composite_type_example.jl}
+
+\subsubsection{Performance of Julia}
+While the performance of a programming language will vary depending on the usecase, it is simple to show that Julia is able to provide performance that is, in many cases, comparable to C. \cite{JuliaMicrobenchmarks} provides a dataset of microbenchmarks provided by the Julia developers that test a variety of common mathematical operations. 
+
+Note that these performance results date from 2018, and as such are not strictly representative of current performance numbers of Julia and the other included languages. However the overall trend is still correct as of the writing of this report.
+
+An interesting difference between Julia and other high-level languages is the use of code vectorisation. Languages such as Python are slow at doing operations themselves, and use precompiled high performance code for intensive operations (for example, NumPy for Python). Vectorisation is the process of formulating a problem as an input to these high performance routines. 
+
+Julia is a compiled language, unlike Python, meaning that the vectorised and unvectorised versions of code eventually compile to the same set of instructions. While, in some cases, vectorised code is easier to read, it is not a requirement for fast code. This is a huge benefit as many operations do not vectorise well. In most cases, Julia is able to run at the same speed whether using vectorised or unvectorised code \cite{Bezanson2017Julia:Computing}.
+
+\subsection{Optimisation in Julia}\label{sub_julia_opt}
+The Julia community has multiple organisations that are based around the development of optimisation libraries, solvers, and utilities. The largest two of these are JuliaOpt \cite{JuliaOpt:Language}, and JuliaSmoothOptimizers \cite{JuliaSmoothOptimizers}, with several smaller contributors that focus on more specific areas (e.g. the package BlackBoxOptim.jl focuses solely on derivative free optimisation). JuliaOpt contains a large collection of packages, most of which are interfaces to existing solvers (such as Gurobi, or GLPK), as well as the utility packages \ac{JuMP} \cite{IntroductionJuMP}\cite{Dunning2017JuMP:Optimization} and \ac{MOI} \cite{ManualMathOptInterface}. These last two packages are most relevant to this project.
+
+\subsubsection{MathOptInterface}\label{subsub:mathoptinterface}
+\ac{MOI} is a Julia package that defines a standard interface to communicate with optimisation software packages. In addition it has the ability to identify the structure of a problem, the structures supported by a solver, and reformulate problems to be compatible. Discussions on our implementation of an \ac{MOI} wrapper can be found in Section \ref{sub:moi_wrapper}.
+
+It is possible to define optimisation problems with the syntax offered by \ac{MOI}, Listing \ref{lst:moi_op_prob} shows an \ac{MOI} definition of the objective function of the problem,
+\begin{equation}
+\begin{aligned}
+    \max_{x,y} 2x+7y, \\
+    -5 \leq x \leq 2, \\
+    y \leq 30, \\
+    2x + 8y \geq 3. \\
+    \label{eqn:example_jump}
+\end{aligned}
+\end{equation}
+\begin{lstlisting}[language=julia,caption={\ac{MOI} definition of an optimisation problem},captionpos=b,label={lst:moi_op_prob}]
+x = MOI.VariableIndex(1)
+y = MOI.VariableIndex(2)
+a = MOI.ScalarAffineVariable(2, VariableIndex(1))
+b = MOI.ScalarAffineVariable(7, VariableIndex(2))
+f = MOI.ScalarAffineFunction([a,b], 0)
+\end{lstlisting}
+It is clear that the \ac{MOI} interface is very verbose, declaring a new variable and type for each aspect of the function. This approach is necessary to ensure a well defined internal structure for the package, however it results in a unwieldy and complex system for manual use.
+
+\subsubsection{\ac{JuMP}}
+Rather than interface with \ac{MOI} directly, the \ac{JuMP} package can be used to interface with \ac{MOI}, which then translates the problem into a format used by solvers. \ac{JuMP} offers expressions that operate at a much higher level of abstraction than \ac{MOI}, giving the freedom to input expressions directly. 
+
+The entire problem shown in (\ref{eqn:example_jump}) can be formulated, solved, and queried in \ac{JuMP} as shown in Listing \ref{lst:jump_optimisation_demo} (using the GLPK solver for Julia \cite{JuliaOpt/GLPK.jl:Julia}). What took five lines in \ac{MOI} is accomplished in one with \ac{JuMP}, line 9 of the listing. This expression is directly translated into the \ac{MOI} expression, but in a layer hidden from the user. 
+
+\lstinputlisting[caption={Optimisation problem definition in \ac{JuMP}},label={lst:jump_optimisation_demo},captionpos=b]{Code/example_code/jump_example.jl}
+
+This arrangement leads to a very flexible system, with a problem defined in \ac{JuMP} easily being applied to multiple solvers without even needing to be re-entered into Julia. 
+
+\ac{RAM} package has been given an \ac{MOI} interface, meaning that the solver be used like any other optimisation package in Julia. \ac{DS} has not been given an interface to \ac{MOI}, as it is intended for use with blackbox functions which are not able to be expressed with \ac{MOI} or \ac{JuMP}.
+
+\subsection{Existing Algorithm Implementations}
+
+\subsubsection{Row Action Methods and Hildreth's Algorithm}
+For row action methods it is commonly the case that algorithms are put forward in papers, but software resources are not also provided. Or if they are, they are not in a form that is easily utilised as a standalone software package.
+
+There are exceptions to this, for example, several algorithms in the AIR Tools II MATLAB package \cite{Hansen2018AIRImplementation} meet the requirements for classification as row action methods.
+
+Hildreth's algorithm, as far as is clear, is not available in any software packages, and there does appear to be any row action methods available for Julia.
+
+\subsubsection{Mesh Adaptive Direct Search}
+\ac{MADS} and its associated sub-algorithms (\ac{MADS-PB}, \ac{OrthoMADS}, etc.) are all offered within the NOMAD software package from the authors of \ac{MADS} \cite{LeDigabel2011AlgorithmAlgorithm}. This software will be used as a reference implementation for analysing the performance of the DirectSearch.jl package. 
+
+The reason that creating the \ac{DS} package is not just replicating work that has been done in the creation of NOMAD is that NOMAD is designed as a standalone piece of software and is not easy to modify. The case for the development of DirectSearch.jl is that it is easy to understand the design of the software, and to make modifications and extensions that fit a target problem. 
+
+%In addition, while the source code of NOMAD is freely available and is licensed under the  \ac{LGPL}, it is not open source in the normal sense. Being that the code repository is not available for access, and contributions back to the software is not easily possible. DirectSearch.jl is fully, open source with the entire repository available on GitHub, and licensed under the MIT license (more permissive than \ac{LGPL}).

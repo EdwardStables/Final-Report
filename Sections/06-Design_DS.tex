@@ -1,0 +1,352 @@
+\section{Design - DirectSearch.jl}\label{section_design_ds}
+The design of DirectSearh.jl (DS) was mostly completed after much of RowActionMethods.jl was implemented, and therefore a lot of the design decisions were made based on lessons learnt during that process. For instance, becoming more familiar with the process of designing custom types and using them for the implementation of highly extensible APIs.
+
+
+\subsection{Structure}
+
+DirectSearch.jl has many similarities in its design to RowActionMethods.jl. Both are constructed around a central data structure and utilise multiple dispatch for API implementation. Individual sections differ to a large degree, with the exception of the stopping conditions, which is very similar.
+
+RAM had two internal APIs (the constraint API and the objective API), and a single API for algorithm implementation. As the objective function and all constraints are stored as function handles, it is not possible to offer the poll/search algorithms any analytical information about them, as was the case in RAM. 
+
+The alternative internal APIs offered by DS are the cache API and the mesh API. There is also an algorithm API for each of the poll and search stages. The design of each of these parts is discussed in their own following sections. 
+
+\subsection{Problem Construction}
+
+The package is encapsulated by the \texttt{DSProblem} type, Listing \ref{lst:dsproblem_struct}. The \texttt{mesh}, \texttt{poll}, \texttt{search}, \texttt{constraints}, \texttt{meshscale}, and \texttt{cache} variables will each be discussed in their own sections. 
+
+\texttt{N} describes the dimensions of the problem, \texttt{function\_evaluations} records the number of times the objective function has been evaluated (as there are generally multiple evaluations per iteration), iteration tracks the number of iterations, and \texttt{hmax} is the maximum constraint violation function, and is covered in the constraints section.
+
+\lstinputlisting[caption={\texttt{DSProblem} struct},label={lst:dsproblem_struct},captionpos=b,linerange={29-40, 44-74,123-123}]{Code/DS_Code/Core.jl}
+
+\texttt{sense} is a enum that has either the value \texttt{Max} or \texttt{Min}. As MADS is a minimisation algorithm, this is recorded to multiple any cost evaluations by $-1$ if a maximisation is required.
+
+\texttt{x} and \texttt{x\_cost} record the current feasible incumbent solution and the associated cost. \texttt{i} and \texttt{i\_cost} are the incumbent infeasible solution and cost, if progressive barrier constraints are being used.
+
+As the feasibility of the initial point supplied by the user is unknown, it is not stored in \texttt{x} or \texttt{i}. To avoid slowing the process of building the problem in the case of using very expensive constraints (or if not all constraints have been defined), it is not desirable to evaluate the feasibility of the point immediately. Therefore it is temporarily stored in \texttt{user\_initial\_point} until optimisation is started, at which point it will be moved to either \texttt{x} or \texttt{i}.
+
+As with RAM, a set of problem status is defined that report on the internal state of the solver, stored in the \texttt{status} variable. While it was intended to integrate this with the stopping conditions (as it is in RAM), this status is currently defined as an enum that has the values \texttt{Unoptimized}, \texttt{PrecisionLimit}, or \texttt{IterationLimit}.
+
+\subsection{Mesh}
+As all algorithms being implemented within this package use the same definition of a mesh (i.e. the same matrices define its directions, and the same scalar variables define its size) therefore it would be a valid decision to contain these values within the problem definition. However, this reduces the ability for the software to be later expanded if alternative definitions of a mesh are needed for future methods.
+
+\subsubsection{Mesh Definition}
+The definition of the mesh is given in (\ref{eqn:mads_mesh}). Apart from the point $x$, this requires the mesh size parameter $\Delta^m$, and the direction set $D$. In addition, the definition given in \cite{Audet2007MeshOptimization} defines $D$ with a generating matrix $G$. LTMADS and OrthoMADS make use of the same default values of these matrices, 
+\begin{align}
+    G = I, \quad D = \begin{bmatrix}  I & -I \end{bmatrix},
+\end{align}
+and do not even explicitly reference $G$. However future variations of these algorithms could modify these variables. As these are used in the definition of the mesh, they are included in a single data type.
+
+In addition, the value of $\Delta^m$ is defined by the mesh index $l$, and the poll size parameter, $\Delta^p$ is also related to the values of $\Delta^m$ and is defined by $l$. Therefore it makes sense to also define these values within the same data type. These values are contained in the \texttt{Mesh} data type, Listing \ref{lst:ds_mesh_1}.
+
+\begin{figure}[h]
+    \lstinputlisting[caption={\texttt{Mesh} type},label={lst:ds_mesh_1},captionpos=b,linerange={10-15,20-29}]{Code/DS_Code/Mesh.jl}
+\end{figure}
+
+Note that the constructor of \texttt{Mesh} implements the default values of all variables for LTMADS and OrthoMADS. It was decided that these default values are likely to be retained in future algorithms, therefore their default values would be suitable. If this does need to be changed in a one-off basis it is simple to override the constructor to provide new values. If an alternative algorithm is added that does need to change these values then a group of setter functions can easily be implemented.
+
+Note that the \texttt{Mesh} type inherits from the \texttt{AbstractMesh} type, and the \texttt{mesh} variable in \texttt{DSProblem} is defined as \texttt{AbstractMesh}. In a future algorithm requires a different set of variables to define the mesh then a new struct that inherits from \texttt{AbstractMesh} can be defined and is already fully compatible with \texttt{DSProblem}.
+
+\subsubsection{Mesh Update}
+
+The defining feature of MADS is the update of the mesh depending on the results of the iteration. In DS this is accomplished with the \texttt{MeshUpdate!} function. The basic update rule utilised by both LTMADS and OrthoMADS is defined as a default for the \texttt{Mesh} type, Listing \ref{lst:ds_mesh_2}. This function will increment/decrement the mesh index and then update the poll and mesh size parameters accordingly.
+
+This function is only called when a more specialised implementation isn't available (note that the second argument is for \texttt{AbstractPoll}). For LTMADS this function is the only update behaviour required, therefore a specialised implementation is not provided. However OrthoMADS needs to also update internal variables at the same time as the mesh variables. Therefore OrthoMADS provides its own update function to ensure its own internal state is also updated.
+
+\begin{figure}[h]
+    \lstinputlisting[caption={Default Mesh Update},label={lst:ds_mesh_2},captionpos=b,linerange={37-48}]{Code/DS_Code/Mesh.jl}
+\end{figure}
+
+
+\subsection{Search Step}
+
+The search API defines how a search algorithm, Section \ref{par:mads_search}, is implemented within the package. The search step may be any algorithm that returns a set of trial points on the current mesh. Listing \ref{lst:dsproblem_struct} has the entry \texttt{search} of type \texttt{AbstractSearch}. This contains a type that corresponds to the implementation of a search step. This type is used for function dispatch when the search step is called. 
+
+Listing \ref{lst:ds_search_func} shows the function Search. This performs two functions, firstly the \texttt{GenerateSearchPoints} function is called (this being the function with multiple implementations that actually defines the search), and returns a set of trial points. The trial points are evaluated with \texttt{EvaluatePoints!}, which checks the points against the cache, constraints, and the objective function to determine if any of the points are improvements to the current solution. This function is discussed later in the section. 
+
+\lstinputlisting[caption={Search Step Function},label={lst:ds_search_func},captionpos=b,linerange={5-8}]{Code/DS_Code/Search.jl}
+
+\texttt{GenerateSearchPoints} is given an implementation for each search algorithm, and is dispatched on with the type of the \texttt{search} field within the problem definition. This value is also used to configure the search step.
+
+\lstinputlisting[caption={Random Search Example},label={lst:ds_search_rand},captionpos=b,linerange={41-60}]{Code/DS_Code/Search.jl}
+
+Listing \ref{lst:ds_search_rand} shows the included search step, a simple algorithm that randomly samples previous points from the cache and returns them after being offset by the current mesh size parameter in a random direction offset. This particular algorithm isn't designed to be particularly useful, but rather to serve as an example for more practical implementations. 
+
+The \texttt{RandomSearch} struct configures the search step with the number of points to generate, and then \texttt{GenerateSearchPoints} is implemented with the actual sampling algorithm.
+
+The freedom in the search step allows for many different approaches to be taken. For instance, if an approximation of a problem is known then this could be used to generate promising trial points in the search step that are evaluated. Alternatively a generic approach could be taken (such as the cache sampling just discussed), or the search step could be skipped entirely.
+
+Unless otherwise specified DS will set the desired search algorithm to the \texttt{NullSearch} type. The corresponding algorithm for this type is a function that returns an empty list of points, essentially skipping the search step.
+
+\subsection{Poll Step}
+
+The poll step is implemented in a very similar manner to the search step, with the \texttt{Poll} function, Listing \ref{lst:ds_poll_func}, appearing to be almost identical.
+
+\begin{figure}[h]
+    \lstinputlisting[caption={\texttt{Poll} Function},label={lst:ds_poll_func},captionpos=b,linerange={1-4}]{Code/DS_Code/Poll.jl}
+\end{figure}
+
+The main difference is that there is only a single implementation of the \texttt{GeneratePollPoints} function. This function is responsible for taking the directions returned by the poll algorithm and producing points. The implementation is shown in Listing \ref{lst:ds_gen_poll_point_func}.
+
+\begin{figure}[h]
+    \lstinputlisting[caption={\texttt{GeneratePollPoints} Function},label={lst:ds_gen_poll_point_func},captionpos=b,linerange={22-35}]{Code/DS_Code/Poll.jl}
+\end{figure}
+
+Firstly the function will run the poll algorithm to generate a set of directions. These are then used to generate points from each of the incumbent points by applying an offset with the mesh size parameter in the generated direction. It is allowed within the MADS algorithm to use the same set of directions for both feasible and infeasible incumbent points. OrthoMADS is deterministic and so would resolve to the same set of directions if called twice anyway. Performing a single call just saves computations.
+
+An interesting point is how the function has to handle both feasible and infeasible incumbent points. When the problem is instantiated both kinds of incumbent points are initially valued at \texttt{Nothing} (this is the Julia implementation of the Null value, equivilent to \texttt{None} in Python, or the null pointer in C). One of them will be set to a valid vector after the user-defined initial point is evaluated, but the other will remain with a null value. This is checked for in this function by only evaluating the poll step about the incumbent point if an actual value does exist.
+
+The meshscale parameter in each of the array comprehensions is defined in the problem description and serves as a variable scaling parameter. By default this is initialised as a vector of ones, but upper and lower bounds can be applied to each variable, which then set the scaling parameter following the expression,
+\begin{gather}
+    s = 0.1(u - l),
+\end{gather}
+where $s$ is the scaling factor, and $u$ and $l$ are the upper and lower bounds. 
+
+This is similar to the scaling rule used in NOMAD \cite{LeDigabel2011AlgorithmAlgorithm}. However NOMAD sets this factor as the initial value of the mesh and poll size parameters, rather than as a scale factor on each variable. Further evaluation is required to confirm if this approach is effective, and a preferred solution would be to apply variable scaling within the objective function black box to provide DS with variables that are all of the same scale.
+
+\subsection{Poll Algorithms}
+In theory, the design of the software allows for a single function and type to encapsulate an entire poll step, as this is all that is called when needed. However as the poll direction generators are moderately complex algorithms, implementing them in a single function makes them far harder to optimise and test. This section will go over the structure of each of LTMADS and OrthoMADS, and show some of the optimisations made within their design (as these are one of the most performance critical parts of the algorithm.
+
+\subsubsection{LTMADS}
+The mathematical basis of LTMADS was briefly covered in Section \ref{subsub:ltmads_algo}. The initial approach taken to the design of the algorithm was to transfer each bullet point into its own function, and implement it directly into Julia code to ensure that the routine generated the correct output. 
+
+As example of this is the function \texttt{b\_l\_generation} which implements the $b(l)$ function in MADS. This has the initial implementation shown in Listing \ref{lst:LTMADS_b_l}. Note that \texttt{b} and \texttt{i} are dictionaries stored in the \texttt{LTMADS} type and remain between iterations. This code first checks if the current mesh index has been used before and if so, returns the \texttt{b(l)} vector and the index \texttt{i} from within it.
+
+\begin{figure}[t]
+    \lstinputlisting[captionpos=b,caption={LTMADS Function that Implements $b(l)$ },label={lst:LTMADS_b_l},linerange={1-8}]{Code/example_code/old_ltmads_example.jl}
+\end{figure}
+
+If the mesh index has not been used before (ie the key does not exist within the dictionary), then a new index and vector are created for this mesh index and stored in the dictionaries before being returned. This works well and correctly implements the function.
+
+Once the code is functionally correct (verified with unit tests and comparison to known-correct outcomes) it needs to be optimised. As the poll code is called on every iteration, it is important that it runs as quickly as possible. If a problem needs 10000 iterations to complete, then each poll step taking 100ms would lead to a computational overhead of 1000s. It is not possible to have the direction generation complete in zero time, but minimising it as much as possible is a priority. 
+
+In Julia allocating memory is a relatively expensive operation, if it is done every single time a loop goes around then it rapidly becomes a bottleneck in code. If new memory does not need to be allocated on each loop, then it is possible to preallocate memory and use the same variable on each loop. 
+
+A subtle case of this is on line 4 of Listing \ref{lst:LTMADS_b_l}. The vector \texttt{b[l]} is being populated by a list comprehension. A list comprehension is a nice syntax for compactly iterating over an array of data, performing an operation on it, and creating a new array with the results. An equivalent form of a list comprehension is shown in Listing \ref{lst:list_comprehensions}. This allocates an empty array, and then continuously expands it with each new entry. 
+
+\begin{figure}[t]
+    \lstinputlisting[captionpos=b,caption={Equivalent Form of a List Comprehension},label={lst:list_comprehensions},linerange={10-14}]{Code/example_code/old_ltmads_example.jl}
+\end{figure}
+
+The issue with this is that the act of expanding the object in memory is moderately expensive. An alternative formulation is to preallocate an array of the correct size for \texttt{b[l]} and iterate over it, inputting the correct values. This is demonstrated in Listing \ref{lst:LTMADS_b_l_generation}. 
+
+\begin{figure}[t]
+    \lstinputlisting[captionpos=b,caption={Improved $b(l)$ Function},label={lst:LTMADS_b_l_generation},linerange={99-113}]{Code/DS_Code/LTMADS.jl}
+\end{figure}
+
+As is shown here, if \texttt{b[l]} needs to be calculated then initially an array of zeros is allocated in the dictionary. Following this, the zero-vector is iterated over, with each value filled in subsequently. 
+
+This kind of optimisation is not overly significant on its own, but going over each aspect of the code and noting where it could be improved will overall lead to much improved performance. This tweak gave a measured performance increase on this function of approximately 20\%, reducing runtime from a mean of 50ns to 40ns.
+
+The initial implementation of LTMADS required an average of 600$\mu$s to generate a basis for a 100 dimensional problem. With various optimisations (most of which are based on memory preallocation and ensuring types are used consistently) this is reduced to an average of 250$\mu$s. 
+
+\subsubsection{OrthoMADS}
+The steps of OrthoMADS given when the paper was published \cite{Abramson2009Orthomads:Ions} map well to single functions within an implementation. The steps were given in Section \ref{subsub:orthomads_algo}, but in brief they are:
+\begin{itemize}
+    \item Halton sequence generation
+    \item Halton sequence adjusting
+    \item Construction of an orthogonal integer basis
+\end{itemize}
+
+\paragraph{Halton Sequence Generation}\\
+
+Julia packages that generate Halton sequences are available. However, of all those found none appeared to be actively maintained. In addition, these libraries are aimed at the use of Halton sequences in a general manner, whereas OrthoMADS only requires the simplest case. Therefore a custom implementation was made, both to guaruntee that code isn't broken in a future Julia update and that any optimisations for the specific usecase can be made. 
+
+On each iteration a single Halton sequence is generated with seed value $t$. The other value that determines the sequence is the a prime number known as the root, with an ordered sequence of primes used for each of the $N$ entries. The \texttt{Halton} function in Listing \ref{lst:halton_gen} shows these primes being generated, followed by creating the corresponding entry with the \texttt{HaltonEntry} function. This step is implementing (\ref{eqn:halton_sequence}). 
+
+\lstinputlisting[captionpos=b,caption={Halton Sequence generation},label={lst:halton_gen},linerange={84-96}]{Code/DS_Code/OrthoMADS.jl}
+
+What should be noted here is that (\ref{eqn:halton_sequence}) denotes an infinite series. This is possible to compute due to the $a$ values being the base $p$ expansion of $t$. Every number has a unique expansion in a given base (regardless of the base being prime). Two approaches were tested to implement this expansion to find the expansion. 
+
+Firstly is the simplest, and most reliable, way within Julia. This involves parsing the input number into a string in the desired base. The characters that represent each digit in the string can then be iterated over and cast back into an integer. This approach, while reliable (as it is using built-in functions of Julia) has the disadvantage of allocating a moderate amount of memory, and therefore takes a moderate amount of time to complete. Julia also requires any base entries to be in the range $2\leq \text{base} \leq 62$, making this unsuitable for larger dimension problems. 
+
+The approach taken instead was to write a custom function to perform this operation. This function runs quickly and shows good scaling as the size of inputs increase. The previous example of using the inbuilt functions is still of use however, as it can be used in tests to confirm that the values given by the custom function are correct. 
+
+\paragraph{Sequence Adjustment}\\
+
+The current adjustment routine is a close to direct replica of the adjustment step defined in (\ref{eqn:halton_adjust}), shown in Listing \ref{lst:halton_adjust}. An area that this could be improved is in the \texttt{argmax} function. The current implementation uses a very simple line-search routine which isn't able to find an exact solution. The non-exact solution isn't of consequence due to the rounding performed on the result, however finding some kind of analytical solution may be more performant.
+
+\lstinputlisting[captionpos=b,caption={Halton Adjustment},label={lst:halton_adjust},linerange={114-121}]{Code/DS_Code/OrthoMADS.jl}
+
+This stage also shows a few cases where more optimisations could be made. For instance, repeated calculations of the $2^{|l|}$ term.
+
+\paragraph{Basis Construction}\\
+
+The simplest step in the process is the construction of the orthogonal basis. This uses the Householder transform (\ref{eqn:householder}), and is directly implemented in the software. 
+\lstinputlisting[captionpos=b,caption={Household Transform},label={lst:householder},linerange={147-151}]{Code/DS_Code/OrthoMADS.jl}
+
+\subsection{Point Evaluation}
+Following the generation of trial points by the search or poll steps, the points must be evaluated and the algorithm updated depending on their outcome. As previously noted this is performed by the \texttt{EvaluatePoint!} function. As this is a long and complex function (dealing with many edge cases) an overview of the decisions it makes are presented in Figure \ref{fig:eval_point_flow}.
+
+Within this figure, \texttt{con} denotes the constraint function (\ref{eqn:progressive_barrier_constraint}), $y$ is the test point, $h_x$ and $h_i$ are the feasible and infeasible incumbent constraint violations respectively, $f$ is the objective function, and $c_x$ and $c_i$ are the feasible and infeasible incumbent costs respectively.
+
+\begin{figure}[thb]
+    \centering
+    \includesvg[width=0.6\textwidth]{media/point_eval_flow.svg}
+    \caption{Logical flow of the point evaluation function}
+    \label{fig:eval_point_flow}
+\end{figure}
+
+This procedure is repeated for each of the trial points, with the iteration completing by choosing the optimum point(s) out of those evaluated. The problem can store both a feasible and infeasible optimal incumbent point. The feasible incumbent point may only be updated if another feasible point with a lower cost is discovered. The infeasible point will only be updated by another infeasible point with a lower constraint violation value.
+
+If a new incumbent is a dominating point then the entire iteration is defined as dominating. Otherwise if a point is improving, the iteration is defined as improving.  If no points are discovered that improve either incumbent value then the iteration is a failure. Definitions of these three outcomes are given in Section (\ref{subsub:mads_progressive_barrier}).
+
+Finally this iteration result is then used to update the mesh values accordingly. Future improvements in this section would be the ability to end an iteration early as soon as a condition is met. For instance, if a dominating point is found, or any point offers a cost reduction greater than a threshold value.
+
+\subsection{Point Cache}\label{sub:ds_cache}
+While only briefly mentioned within any of the MADS papers, a point cache is one of the most useful and performance critical aspects of the algorithm. This is due to the potentially high cost of each function evaluation. If the algorithm has previously evaluated a trial point then the result can be referenced from within the cache. This avoids repeated objective function evaluations.
+
+\subsubsection{Data Structure}
+As the cache is accessed on each iteration and could potentially contain many thousands of entries (especially if a cache is preloaded before optimisation) it is necessary to make use of a data structure that does not become slower to access as it increases in size. These requirements made a dictionary the clear choice for an initial data structure. This structure pairs keys (the input points) with results (the cost of the points), and makes use of a hashing algorithm to access the result in constant time, regardless of the size of the dictionary. 
+
+Therefore at its most basic level, the cache should be a dictionary that maps points to a cost. This kind of data structure shows very good performance for key lookup. For a key being a 15-dimensional vector (for a 15-dimensional problem) mean lookup times are consistently in the range of 300ns-330ns, even when over a million elements are in the cache. Compared to a cache implementation based on a vector, this is clearly much more performant as a vector has no ability to hash entries, and therefore has an $O(n)$ lookup time. A dictionary uses marginally more memory than a vector, however this is a minor part of the overall memory cost, as the data itself uses the vast majority. 
+
+Unfortunately when moving to testing on problems with a high dimensionalty during testing it was shown that the dictionary lookup became quite slow. The MADS authors suggest a maximum target size of up to 500 variables \cite{LeDigabel2011AlgorithmAlgorithm}. A lookup operation in the cache for this key vector dimension is benchmarked as taking a mean time of 6$\mu$s. If a problem requires, for example, 100000 cache lookups then this is an additional overhead of over half a second. This is a moderate overhead, but could be improved.
+
+This performance could be improved by using a different data structure entirely, for example the NOMAD authors achieve very good performance using a custom binary tree \cite{LeDigabel2011AlgorithmAlgorithm}. Or by implementing an alternative hashing algorithm that is specialised to the key data (large floating point vectors). 
+
+
+\subsubsection{Cache API}
+To be useful the cache needs to have more utility than just providing a map of points to costs. For instance, it may be of use to know the order that points in the cache where considered, or how they were evaluated by the algorithm (infeasible feasible but of higher cost, etc.). This illustrates two additional downsides of a dictionary, they are unable to contain more than one of the same key, and they do not, by default, preserve the order of entries. 
+
+\begin{figure}[t]
+    \lstinputlisting[captionpos=b,caption={\texttt{PointCache} Data Type},label={lst:cache},linerange={1-1,9-20}]{Code/DS_Code/Cache.jl}
+\end{figure}
+
+For this project it was decided to focus on the main cost cache, and a recording of the order of points. This does has a cost in memory, but it is not significant in the general case (i.e. when not considering problems with a very large size) given the amount of memory available in modern computers. The struct that includes this information is shown in Listing \ref{lst:cache}.
+
+In the more restrictive cases (for example, when embedded), a different cache can be implemented that excludes the parts of the cache that are not compatible with the environment. In addition, constraints are to be added that set the maximum size of the cache, ensuring that it never uses too much memory. This could potentially also involve storing the cache to disk once it reaches a certain size. 
+
+A variety of functions are necessary for operating on the cache. As previously discussed, while the cache is exposed to the algorithms (allowing them to modify or access it directly) this harms the maintainability of the code. Therefore a large number of functions are defined to provide access to the cache, as well as writing to it. 
+
+For example writing to the cache is completed with the function \texttt{CachePush}, which performs checks to ensure the point and cost is valid, and then adds the point and its cost into the cache data structures.
+
+\begin{figure}[t]
+    \lstinputlisting[captionpos=b,caption={\texttt{CachePush} Function},label={list:cache_push},linerange={44-47}]{Code/DS_Code/Cache.jl}
+\end{figure}
+
+Other functions include \texttt{CacheGet}, \texttt{CacheQuery}, and \texttt{CacheRandomSample} rather respectively return the cost of a point in the cache, return boolean to indicate if a point is in the cache, and return N random points from within the cache.
+
+\subsubsection{Future Cache Improvements}
+
+Core features to improve the functionality of the cache would include the ability to save and load a cache into the package. Having the ability to reference a set of precalculated results has the potential of giving much better performance, for an entire run of the algorithm. The cache would also benefit from improvements such as storing the result of constraint evaluations of points, as well as allowing an inexact match (within a small tolerance) to trigger a cache hit.
+
+The cache would also benefit from moving to an alternative data structure that lacks some of the disadvantages of the dictionary. Fortunately the design of the package allows for an additional cache to be built alongside the current one without interfering, and then swapped in when it implements all required functionality and is fully tested.
+
+\subsection{Constraints}
+When considering just the extreme barrier constraints the DS constraint system was relatively easy to implement. At its core, this was originally just an array of function handles that would be called in turn. Each of these handles returns a boolean to indicate if the constraint has been violated or not. This is then used to indicate whether or not a point is feasible. 
+
+This process became more complex when dealing with progressive barrier constraints, and being able to handle combinations of extreme and progressive barriers. 
+
+\subsubsection{Constraint Organisation}
+The chosen approach was to define all constraints within a \textit{collection}. Each collection contains an arbitrary number of constraints all of the same type (either progressive barrier or extreme barrier for the purposes of this report).
+
+The collections are then collated into a single data structure, \texttt{Constraints}, which is held within the problem description. By default constraints, Listing \ref{lst:constraints} contains a vector of collections, as well as a count on the number of collections that have been defined.
+
+\begin{figure}[tb]
+    \lstinputlisting[captionpos=b,caption={\texttt{Constraints} Type},label={lst:constraints},linerange={152-155,163-163}]{Code/DS_Code/Constraints.jl}
+\end{figure}
+
+The collections are defined within the \texttt{ConstraintCollection} type, Listing \ref{lst:collection}. The collection contains more detail relating to its individual status and configuration. It contains the vector of constraints as well as the count. In addition it has an ignore boolean, future work would allow for individual collections to be enabled or disabled dynamically which could be useful for certain problems.
+
+The final variables all refer to parameters used for progressive barrier constraints.
+
+\begin{figure}[tb]
+    \lstinputlisting[captionpos=b,caption={\texttt{ConstraintCollection} Type},label={lst:collection},linerange={75-82,95-95}]{Code/DS_Code/Constraints.jl}
+\end{figure}
+
+\subsubsection{Progressive Barrier Constraints}
+Formulating the constraints within collections adds a moderate additional complexity to the constraint evaluation procedure. The original MADS-PB algorithm allows a maximum constraint violation function result of less than any previous violation result, Equation (\ref{eqn:progressive_barrier_constraint}). And then updates this maximum violation depending on the outcome of the iteration, Equation (\ref{eqn:hmax_update}).
+
+To implement the MADS-PB algorithm a small cache is created within the \texttt{Constraint} type (this could be incorporated into the global cache but this was not implemented during the project). At the end of each iteration the cache is wiped, and built again. Algorithm \ref{algo:MADS-PB_evaluation} shows the process of iterating through all constraints and trial points. Note that the summation function used to create $h_i$ is configurable. By default the pictured function ($\max(0,c(x)^2)$) is used, but this can be set to an alternative, e.g. an L1 norm.
+
+\begin{algorithm}
+\caption{MADS-PB Evaluation Algorithm}
+\label{algo:MADS-PB_evaluation}
+\begin{algorithmic}
+\FORALL{trial points $x$}
+    \FORALL{Collections}
+        \STATE $h_i = 0$
+        \FORALL{Constraints $c(.)$ in Collection}
+            \STATE $h_i = h_i + \max(0, c(x)^2)$
+            \STATE Record outcome of evaluation (\texttt{Feasible}, \texttt{WeakInfeasible}, \texttt{StrongInfeasible})
+        \ENDFOR
+        \STATE cache $h_i$
+    \ENDFOR
+\ENDFOR
+\RETURN{$\sum_i h_i$}
+\end{algorithmic}
+\end{algorithm}
+
+The return type provided by Algorithm \ref{algo:MADS-PB_evaluation} has three values: \texttt{Feasible}, \texttt{WeakInfeasible}, and \texttt{StrongInfeasible}. These refer to completely feasible points, points that satisfy unrelaxable constraints but not relaxable ones, and points that violate unrelaxable constraints (or have a relaxable violation greater than $h^{max}$. This information, along with the cost of the point, is used by the point evaluation function to decide on the outcome of the iteration.
+
+After the outcome of the iteration is decided the constraint variables can be updated. The MADS-PB update rule (\ref{eqn:hmax_update}) is implemented by Algorithm \ref{algo:MADS-PB_update}. The cache is utilised to return the individual $h_i$ value for the given constraint collection (as the combined value cannot be used to update the individual collection). 
+
+To follow the update rule for improving iterations, the cache is used again. Every recorded violation for a given collection is filtered to incude only those smaller than $h_i$, the greatest of which is then chosen as the new $h^{\max}$ value.
+
+\begin{algorithm}
+\caption{MADS-PB Update Algorithm}
+\label{algo:MADS-PB_update}
+\begin{algorithmic}
+\REQUIRE{Selected point $x$, Iteration outcome}
+\FORALL{Collections}
+    \STATE extract $h_i$ from cache for selected $x$
+    \IF{outcome is \texttt{Improving}}
+        \STATE extract all violations for this constraint $H$
+        \STATE set $h^{max}= \max\{h < h_i : h \in H\}$
+    \ELSE
+        \STATE set $h^{max}=h_i$ 
+    \ENDIF
+\ENDFOR
+\STATE Record total violation value
+\STATE Wipe cache
+\end{algorithmic}
+\end{algorithm}
+
+\subsubsection{Benefit of Constraint Collections}
+
+It is clear from these algorithms that the design has been considerably complicated with the addition of the constraint collections. There are several reasons for their inclusion:
+
+\begin{itemize}
+    \item Improved ability to organise constraints.
+    \item Separation of unrelated constraints.
+    \item Simplification of enabling/disabling constraints.
+\end{itemize}
+
+Organisation is not a functional necessity. However it makes it possible to store constraints in related groups with a single reference to their location, rather than it being up to the user to stored references to many different constraints themselves.
+
+As each constraint collection maintains its own $h^{max}$ value, similar constraints can be grouped together with a configuration that benefits them. Additionally, as $h^{max}$ values can vary separately for each collection. It is possible that this variation could provide improved performance if unrelated constraints are group separately, and would be an interesting future investigation.
+
+Finally, if the user desires to enable/disable constraints this is simplified by the grouping of constraints together. The additional benefit here is that by maintaining their own $h^{\max}$ value these constraints will not unduly affect the convergence towards feasibility of other constraints when introduced. This problem arises when introducing new relaxable constraints, as to even generate improving points it will likely be required to modify the stored $h^{\max}$ value, which could then negatively affect the already present constraints. For this implementation the summed $h^{\max}$ value may also need to be modified to add new constraints, but this will not affect the already present constraints as their individual $h^{\max}$ values cannot be violated, and are unaffected by the new additions.
+
+\subsection{User API}
+The RAM package is able to make use of the features of JuMP and MOI for interfacing with the user. DS does not have this advantage and must therefore make its own robust interfacing options available. 
+
+All information about the solver is stored in the \texttt{DSProblem} type. The initial problem is considered by instantiating the \texttt{DSProblem}. This, at a minimum, requires the problem dimension to be added. By default the problem will specify all other configuration options (for example, selecting LTMADS as the poll algorithm). These can be set manually by setting them as key word arguments to \texttt{DSProblem}. Listing \ref{lst:ds_api_example} shows two ways a problem can be configured.
+
+\lstinputlisting[caption={Example DirectSearch.jl API},label={lst:ds_api_example},captionpos=b,linerange={1-10}]{Code/example_code/DS_api.jl}
+
+While options can be set in the problem constructor, they can also be set with dedicated functions. This is useful for updating the problem definition after running for a time, or for giving neater code. Inputs that define the problem itself (i.e. the objective function and constraints) also have their own dedicated functions. The objective function is added with \texttt{SetObjective}, that takes a reference to any Julia function as its input. Any function passed as an objective should take an array of values as input and return a scalar cost. Unfortunately Julia does not allow this to be enforced, however the optimisation would quickly fail if a different kind of function was provided.
+
+The optimisation itself is performed with the \texttt{Optimize!} function. At a minimum the problem must have an initial point, and an objective function that supports that dimension. If these are provided then the MADS algorithm will perform an unconstrained minimisation of the objective.
+
+Additionally constraints can be added with the \texttt{AddProgressiveConstraint}, and \texttt{AddExtremeConstraint} functions. The details of the constraints and their requirements was previously discussed.
+
+\lstinputlisting[caption={DirectSearch.jl Constraints API},label={lst:ds_constainrs_example},captionpos=b,linerange={13-14}]{Code/example_code/DS_api.jl}
+
+The two examples implement the same constraint. For the extreme barrier a simple inequality is able to determine if a limit is met or not. For progressive barrier constraint, a negation is able to cast the negative valued inputs as positive, indicating to the algorithm that they are violating the constraint.
+%\subsubsection{Reporting}\label{subsub:ds_des_reporting}
+%As was just discussed, functions have been made available to access raw data from the problem model. However using this method to access a large amount of data is troublesome. Therefore the reporting capability was designed. 
+%
+%This consists of a set of functions that will print various pieces of information to stdout. Some of these are purely output data in a human readable format (e.g. the current set of incumbent points). Others are potentially more useful, and store or load internal configurations from a file. 
+%
+%This allows for an optimisater setting to be saved, making it easier to replicate results in future. It also allows for the cache to be saved after a run, meaning that future runs (potentially with a different solver configuration) can make use of these precalculated results, decreasing the time spent computing costs.
+%
+%\td{cover implementation as and when it is finished and tested }
+
+\subsection{Code Portability}\label{sub:ds_portability}
+As with RAM, DS has been designed using parametric types for majority of functions and structs, allowing alternate types to be used, rather than the assumed default of \texttt{Float64}. While RAM generally makes use of just a single parameteric type, certain aspects of DS have been given a second parametric type, intended for use as providing a type to replace the default \texttt{Int64} integer type. An example of this can be seen in the OrthoMADS struct, Listing \ref{lst:orthomads_composite}. 
+
+It should be noted that this particular parametric behaviour has not been implemented everywhere in the package. However as the template for its inclusion has been given in several places, its addition in future should be a relatively simple matter. 
+
+As with RAM, testing the package for use with types other than the default \texttt{Float64} has not been performed. While the majority of operations should work with similar types (e.g. \texttt{Float32}) there will undoubtedly be bugs introduced when changing types. As this functionality is intended for use with custom types for specialist environments it is assumed that users in that context will ensure the package is made compatible. The parametric types are included to make this adaption process simpler.
+

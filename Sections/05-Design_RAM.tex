@@ -1,0 +1,270 @@
+\section{Design - RowActionMethods.jl}\label{section_design_ram}
+
+This section will cover the design decisions made in the development of the RowActionMethods.jl package, as well as details of its implementation. 
+
+Most of the design decisions discussed in this section are based off prototyping and experimenting within testbenches based on Jupyter notebooks. This method allowed for rapidly iterating over designs, maintaining multiple designs for cross-comparison, and benchmarking the performance of each. Selected designs were chosen due to having the best performance for the given requirements, although in some cases performance has been sacrificed to improve usability.
+
+\subsection{Structure}
+
+A constant factor during the design of this package is the balance of control between the package itself, and algorithm designers. Giving full control to the algorithm designer essentially removes any complex functionality from the package, and would result in additional algorithms differing greatly in their internal designs. On the other hand, being overly restrictive disallows flexibility in algorithm design and potentially enforces poor performance across the board. 
+
+To resolve this, the package has its own definitions for the objective function and constraints that algorithm designers must use. This ensures that the package is able to make assumptions about the data that the algorithms expect to receive and optimise accordingly. These data types are designed to be relatively simple, have efficient functions to access them, and precalculate many actions for the user. The objective function and constraints are discussed in Sections \ref{sub:obj_ram_des} and \ref{sub:constraints_ram} respectively.
+
+To balance this aspect of prescriptive design, the users are given a simple API, and the freedom to define their own internal representation of the problem. Experimentation with more complicated designs showed that the API became overly complex and introduced significant bottlenecks. For example, for a time it was designed such that a user would `register' their problem matrices with the package (which would itself store the matrix in a sparse format), and the user would store a reference to this matrix. However, this design resulted in the user having to store and manage the same number of variables, as well as a more complex system for accessing and updating variables, and gave no performance benefits. The only advantage was that it attempted to enforce storage in a sparse format. As users should be able to judge if a variable is best stored in a sparse format or not, this design was dropped and the simpler construction was adopted.
+
+\subsection{Problem Construction}
+
+The core of the package is the \texttt{RAMProblem} type. This contains all the information that defines the problem, including the description of the problem, and the solver. This custom type is shown in Listing \ref{lst:RAMProblem}. 
+
+The struct is parameterised with the \texttt{T} and \texttt{F} types that fulfil the role of float and integer types respectively. This is done to allow for this package to easily be adapted to an environment that does not contain the standard \texttt{Float} and \texttt{Int} types. By default, this type is constructed with \texttt{Float64} and \texttt{Int64}, as this should be suitable in the majority of computing environments the package is used in.
+
+\lstinputlisting[caption={\texttt{RAMProblem} struct },label={lst:RAMProblem},captionpos=b,linerange={94-113,133-133}]{Code/RAM_Code/Types.jl}
+
+%\begin{figure}[h]
+%    \Tree[.\texttt{RAMProblem} [.\texttt{Dict\{Int,ConstraintEntry\}} \texttt{SparseVector} \texttt{Float64} ] \texttt{ModelFormulation}  [.\texttt{SparseQuadraticObjective} \texttt{SparseMatrix} \texttt{SparseVector} ]  ]
+%    \caption{Simplified view of RAMProblem contents}
+%    \label{fig:RAMProblem_contents}
+%\end{figure}
+
+\texttt{variable\_count} is an integer number that records the number of variables the current problem has. The \texttt{constraints} and \texttt{objective} variables are covered in their own sections. 
+
+\texttt{result} will store the result of the algorithm as soon as it is calculated. This was done so that the package is able to store a solution once it is found, and not rely on the internal stage of any of the algorithms.
+
+The \texttt{status} entry is of type \texttt{AbstractStatus}. Subtypes of this correspond to a particular outcome or state that the solver can be in. The default statuses are given in listing \ref{lst:RAM_status}. The initial type is set as \texttt{OPTIMIZE\_NOT\_CALLED}, with this updated whenever iteration is stopped with the most appropriate entry. Custom statuses can easily be defined and set by custom stopping conditions (Section \ref{sub:RAM_stopping_cond}).
+
+\lstinputlisting[caption={Status types},label={lst:RAM_status},captionpos=b,linerange={85-92}]{Code/RAM_Code/Types.jl}
+
+\texttt{iterations} records the number of iterations that have been performed of the current algorithm, and \texttt{method} contains the algorithm's struct itself.
+
+The final entries are the boolean \texttt{threads}, which will distribute iterations across multiple processors, and \texttt{statistics} which records timing information for various stages of the algorithm. 
+
+The final entry in \texttt{RAMProblem} is the \texttt{statistics} entry. This was added during testing as an internal tracker for useful information. At the current stage of the project it consists of a struct that lists runtimes for parts of the algorithm. However this will be easy to expand with more information in future if required.
+
+
+\subsection{Objective} \label{sub:obj_ram_des}
+While row action methods are applicable to multiple kinds of objective functions, the target algorithm for this project, Hildreth's method, makes use of quadratic objective functions, therefore this is the kind of objective function that has been implemented. However Julia's type system and multiple dispatch means that the additional of other objective functions in future is simple. Listing \ref{lst:RAMProblem} shows that the objective is of type \texttt{AbstractObjective} this is an abstract type that all other objectives must be a child of .
+
+\subsubsection{Objective Definition}\label{subsub:ram_objective}
+
+A problem with $n$ dimensions has a quadratic objective function in the form,
+\begin{gather}
+    \frac{1}{2}\langle Qy,y \rangle + \langle y,F \rangle,
+\end{gather}
+where $Q$ is an $n\times n$ matrix and $F$ and $y$ are $n$ dimensional vectors. This requires storing the matrix $Q$ and vector $F$. This was initially implemented in the form shown by Listing \ref{lst:RAM_original_obj}. Note that the entries are given a sparse format due to this package being aimed at problems characterised by a high degree of sparsity.
+
+\lstinputlisting[caption={Original Quadratic Objective Type},label={lst:RAM_original_obj},captionpos=b,linerange={26-27,30-30,41-41}]{Code/RAM_Code/Types.jl}
+
+It was then noted that the matrix $Q$ was most often needed when solving systems of linear equations in the form $Qa=b$. The default methods Julia uses to solve these systems will calculate an LU or Cholesky factorisation of the matrix. To avoid repeated calculation of the matrix inverse, it is logical to precompute this value and store it within the objective. Therefore the type was updated to the form shown in Listing \ref{lst:RAM_obj}.
+
+\lstinputlisting[caption={Updated Quadratic Objective Type},label={lst:RAM_obj},captionpos=b,linerange={26-27,29-30,41-41}]{Code/RAM_Code/Types.jl}
+
+Unfortunately there is a type conflict between the linear algebra package (the package that solves the system of equations) and SuiteSparse (the package that defines the sparse matrices). If SuiteSparse is used to perform the factorisation (with the input and output both being sparse matrices), the resultant type is incompatible with the generic linear algebra operations. The alternative is used here, where the cholesky factorisation from the linear algebra package is used, but does not use sparse storage. 
+
+There are a pair of downsides to this. Firstly, the storage of the factorisation will require more memory due to the dense storage. Secondarily, any calculations that may be able to take advantage of a sparse objective factorisation is forced to use the dense matrix, resulting in potentially slower computations.
+
+\subsubsection{Objective Accessor Functions}
+It is possible to access the objective values directly given a reference to the \texttt{RAMProblem} they are contained within. However, this introduces multiple design dependencies within the package. For instance, if the name of a variable within an objective type is changed then anywhere this value is accessed must also be updated. The alternative is to create a set of accessor (or getter) functions that return the required information. This ensures that only these functions need to be maintained, rather than multiple other references from elsewhere in the package.
+
+For the objective function a pair of accessor functions were defined: \texttt{GetObjective} and \texttt{GetObjectiveFactorised}. Respectively these return the tuples \texttt{(Q, F)} and \texttt{(Qf, F)}.
+
+This accessor function pattern is repeated throughout the project for the majority of commonly needed values within algorithm/problem description structs.
+
+\subsection{Constraints}\label{sub:constraints_ram}
+
+A problem of dimension $n$ and with $m$ linear constraints defines the constraints as,
+\begin{gather}
+    Gy\leq h,
+\end{gather}
+where $G$ is an $m\times n$ matrix, and $y$ and $h$ are $n$ and $m$ dimensional vectors respectively. While the use of constraints depends on the algorithm in question, the package assumes that the matrix $G$ will be both large and sparse. 
+
+\subsubsection{Constraint Storage}
+
+The \texttt{Constraints} type, Listing \ref{lst:RAM_constraints}, stores the constraint of the problem. The \texttt{Functions} and \texttt{Limits} entries store the matrix $G$ and the vector $h$ respectively. 
+
+\lstinputlisting[caption={\texttt{Constraints} Type},label={lst:RAM_constraints},captionpos=b,linerange={63-83}]{Code/RAM_Code/Types.jl}
+
+To define the constraints, the \texttt{AddConstraint} function is used, Listing \ref{lst:RAM_add_constraint}. If no constraints are currently present then the function will initialise the sparse matrix and vector. Otherwise it will define a new array that is the concatenation of the existing constraints and the new ones (as Julia does not support resizing matrices in-place). 
+
+\lstinputlisting[caption={\texttt{AddConstraint} function},label={lst:RAM_add_constraint},captionpos=b,linerange={6-7,9-28}]{Code/RAM_Code/Constraints.jl}
+
+It should be noted that the constraints of a problem are defined as rows of the matrix $G$. This is slightly problematic, as Julia stores matrices with column based ordering (meaning that consecutive values in a column are next to each other in memory, but consecutive values in rows are not). This results in appending or accessing columns of a matrix being far faster than rows. This also extends to sparse data storage.
+
+Therefore the \texttt{Functions} entry in the constraints struct is actually the transpose of the matrix $G$. This is documented in both the struct itself, as well as by the accessor functions.
+
+\subsubsection{Constraint Modification}
+
+The additional variables within \texttt{Constraints} and the additional functionality within \texttt{AddConstraint} is related to being able to remove constraints that have already been added. This functionality is in a prototype stage at the time of submission, but has heavily influenced the design of the constraints and therefore is still included. 
+
+A unique index is generated for each constraint that is added. For simplicity this is just set at the absolute number of constraints that have ever been added, meaning there is no possibility of repeated indexes. This value is tracked by the \texttt{max\_constraint\_index}. The dictionary \texttt{constraint\_indexes} is then used to map between these unique indexes and the row index within the constraint matrix/vector. 
+
+If a constraint is removed (and the matrix/vector are changed accordingly) this mapping is no longer valid, but can be easily updated to reflect the new position of constraints.
+
+A disadvantage of this kind of constraint modification is that it will require rebuilding the problem model, which is a very expensive operation. Another addition that could be done is to create an API for in-place modification of problem constraints where rebuilding is not required.
+
+This operation would differ between algorithms, but has the potential to be quite efficient. For example, the constraint limit for the dual formulation of Hildreth's algorithm is defined as $b=h+GB^{-1}d$, where $h$ is the constraint limit of the primal formulation, with this being the only point that $h$ is used. Therefore a modification to the primal constraints could be very efficiently copied to the dual formulation, requiring only a vector addition. 
+
+These kinds of constraint modifications were unfortunately not included in RAM at the time of submission, but it is hoped that this is a feature that can be added at a later date.
+
+\subsubsection{Constraint Accessor Functions}
+
+As with the objective function, it is necessary to access the constraints in a safe manner by using accessor, or getter, functions. Two of these are defined for the constraints: \texttt{GetConstraintMatrixTransposed} and \texttt{GetConstraintVector}. The names of the functions should imply their individual use. 
+
+It was a deliberate decision to not supply a function that transposes the constraint function back to its `traditional' form. It was felt like this may give the impression to a user that it is an efficient function to call, when in reality it is just performing its own transposition. With only the transposed function, it is very clear to the user that a transposition is necessary to get the original data.
+
+It is possible in future that a non-transposed constraint matrix and corresponding function may be added, but this does come at the cost of memory. 
+
+\subsection{Model Formulation}
+The model formulation is the area of the package design that is the most `open' in implementation. This area is where the algorithm designer is free to take the APIs implemented in the package to form their algorithm. The main two APIs they have access to are the objective and constraint APIs, discussed previously. The designer must also themselves implement the Model API, discussed in the next subsection.
+
+The model formulation is defined by a struct that is a subtype of the \texttt{ModelFormulation} abstract type and stored in the \texttt{method} entry of the problem definition (Listing \ref{lst:RAMProblem}). This should include all variables required for the algorithm to function. As an example, Listing \ref{lst:RAM_model_formulation} shows the model formulation for Hildreth's method. 
+
+\lstinputlisting[caption={Hildreth's Method Model Formulation},label={lst:RAM_model_formulation},captionpos=b,linerange={18-36}]{Code/RAM_Code/Hildreth.jl}
+
+The user is able to define custom arguments to configure a model and pass them in as keyword arguments when defining the problem. For the \texttt{Hildreth} type, the constructor can be passed the argument \texttt{initial} to set the \texttt{user\_initial\_point} variable. This is useful when the method has different possible configuration options, as further options can easily be added that are specific to the solver.
+
+\subsubsection{Model API}
+With the aim of providing a flexible structure for algorithms to be developed in, the necessary API for a designer to implement is delibrately minimal. Apart from the model formulation struct, there are three kinds of functions that define the API: configuration, necessary, and optional.
+
+\paragraph{Configuration Functions}\\\
+
+The configuration functions are very small, consisting of returning a single type or value that will indicate to the rest of the package what the requirements of the algorithm are. Of these, the only one that must be implemented is the \texttt{ObjectiveType} function, which indicates the kinds of problems that the algorithm can solve. Other configuration options have defaults implemented such that multiple dispatch will cause the default to be called if the solver doesn't implement its own version. An example would be the \texttt{SupportsDeleteConstraint} function. 
+
+\paragraph{Necessary Functions}\\\
+
+There are four necessary functions that are instrumental to the use of an algorithm, and will be discussed in the order that they are called. 
+
+\texttt{Build} is called when the package believes the objective and all constraints have been defined, and is intended for the algorithm to build its internal representation from the objective and constraint matrices. 
+
+\texttt{Iterate} implements the main iteration routine of the algorithm. As this is the most frequently called function in the entire package it should be implemented to be as efficient as possible. To this end, it should avoid defining any new variables (as allocating memory is a major performance bottlenecks in Julia). If working variables are needed for this stage they should be preallocated during the build stage within the model formulation. 
+
+\texttt{Resolve} is called after optimisation has finished, and is useful for calculating primal results from a dual representation that may have been used during solving. 
+
+Finally \texttt{GetVariables} is used whenever the resultant optimal point is queried.
+
+It is possible that an algorithm may not have a need for one of these steps (e.g. no dual formulation is used, meaning that the resolve step isn't required). In this case, the necessary functions must still be implemented, but can be left empty.
+
+%\begin{figure}[thb]
+%    \centering
+%    \includesvg[width=0.2\textwidth]{media/RAM_flow.svg}
+%    \caption{Necessary Function Flow}
+%    \label{fig:RAM_necessary}
+%\end{figure}
+
+\paragraph{Optional Functions}\\\
+
+The final kind of function within the API are the optional functions. These are included depending on the features that the algorithm supports. For example, if an algorithm is able to support the deletion of a constraint (and they indicate this with the corresponding configuration option) then they must also implement the \texttt{DeleteConstraint} function to recalculate the internal variables that would be affected by the removal of a constraint.
+
+Other kinds of functions that fit this category are the functions responsible for multithreaded operation. By default the package will assume an algorithm  does not support multithreading, but implementing the appropriate optional functions allows for multithreading to be used.
+
+\subsection{MathOptInterface Wrapper}\label{sub:moi_wrapper}
+As was covered in Section \ref{subsub:mathoptinterface}, MathOptInterface is a standard interface that optimisation solvers can implement to allow compatibility with JuMP, and other pieces of optimisation software. MathOptInterface defines a large number of functions for accessing and setting variables, as well as running behaviours within the software. Packages that are compatible with MOI define a `wrapper' between the MOI types and functions, and those internal to the package itself. It is useful to think of this as a translator between two languages, one that is very general (MOI) and one that is more specialised (RAM). 
+
+The wrapper has two sections. The first is a composite type that contains values related to the state of the wrapper and the solver (for example, the configuration settings), as well as the struct that defines the actual solver (for this package this is the RAMProblem type). The second section is a large collection of functions that translate between the MOI format and the format used internally. 
+
+A large benefit of the way MOI is designed is that the wrapper can implement as much or as little is needed for the solver to function. Having a functioning package with only a handful of wrapper functions for setting up and solving a problem is totally possible. If this was the case, then it would not be overly problematic to allow users of the package to create their own representations of objective functions and constraints. However, if a larger subset of the MOI interface is implemented then it becomes far more complex. This complexity is specifically related to problem modification. 
+
+MOI defines a large number of ways to modify a problem. For example, modifying the coefficients within constraints, or adding variables to the problem. If each algorithm provided their own implementation of an objective and constraint then each would require a custom implementation of problem modification. This is a behaviour that requires careful design and knowledge of MOI to implement correctly, as well as extensive tests to verify correctness. This therefore shows another reason for enforcing preset objective and constraint definitions.
+
+
+\subsection{Stopping Conditions}\label{sub:RAM_stopping_cond}
+An important usability feature of optimisation software is being able to define conditions at which it will be able to stop running, and report what reason for stopping. Julia's multiple dispatch system offers a highly extensible system for implementing this. The package is designed with a small collection of commonly needed conditions (for example number of iterations, or runtime), but the system can easily be extended with custom stopping conditions.
+
+The stopping condition system has three distinct parts. Firstly is the \texttt{StoppingCondition} abstract type. Any stopping condition must be a subtype of this. An example of this is the \texttt{IterationStop} struct in Listing \ref{lst:RAM_stopping_condition}. This type contains any configuration values for the stopping condition, and also performs selection of the correct evaluation via multiple dispatch.
+
+\lstinputlisting[caption={Stopping Condition Implementation},label={lst:RAM_stopping_condition},captionpos=b,linerange={42-46}]{Code/RAM_Code/StopConditions.jl}
+
+Secondly is the \texttt{stopcondition} function, Listing \ref{lst:RAM_stopping_function}. This function is called on each iteration of the algorithm and should return a boolean value to indicate if the condition has been met or not. This function has an implementation for every stopping condition, with the specific stopping condition selected via multiple dispatch.
+
+\lstinputlisting[caption={Stopping Condition Function},label={lst:RAM_stopping_function},captionpos=b,linerange={55-57}]{Code/RAM_Code/StopConditions.jl}
+
+Finally is the \texttt{StopConditionStatus} status function (also in Listing \ref{lst:RAM_stopping_condition}). Again this is a single function that has an implementation for each stopping condition and is selected with multiple dispatch. This is called if a stopping condition indicates that it has been met, and the status function is then used to set the status of the overall problem. This function can be skipped, and the status will be updated to \texttt{UnknownStoppingCondition}.
+
+This method allows for new stopping conditions to be very easily added, only requiring the new type and function to be impemented and with no modifications made to existing code. This pattern is possible thanks to Julia's use of multiple dispatch.
+
+Multiple stopping conditions can be given to RAM by combining the desired conditions into a vector which is then checked in turn on each iteration. While this may give the impression of being inefficient, if the stopping conditions are small operations, Julia's compiler is able to inline the functions (meaning that their content is moved to the caller's scope), resulting in highly efficient code.
+
+Listing \ref{lst:RAM_check_stopcondition} shows the function \texttt{check\_stopcondition}. This function is called on each iteration to check indicate if any stopping conditions have been met. It simply iterates through each of the configured stopping conditions until one evaluates as true, otherwise returning false and allowing the iteration to continue.
+
+\lstinputlisting[caption={\texttt{check\_stopcondition} Function Implementation},label={lst:RAM_check_stopcondition},captionpos=b,linerange={29-35}]{Code/RAM_Code/StopConditions.jl}
+
+In addition to the illustrated iteration stopping condition, a condition that stops iteration after a configured number of seconds is included.
+
+\subsection{Distributed Computing}\label{sub:hildreth_threaded}
+It is illustrated in \cite{Liu2014AnAlgorithm} that row action methods have the potential to be very efficiently parallelised, theoretically allowing perfect scaling. A requirement of the project is to demonstrate this scaling ability, and make it simple for algorithms to be made parallel.
+
+\subsubsection{Threading}
+
+The manner of distributed processing selected for implementation in RAM was local threading within Julia on a single machine. This is less extensible than a distributed computing platform such as MPI \cite{MPIForum}, as the maximum number of concurrent operations is limited to the amount of logical cores that available on the host machine. However, threading is simpler to implement than a full MPI interface, as well as being potentially more portable. 
+
+Multithreaded applications are able to create multiple concurrent computations that each are run on their own logical core within a computer, each computation is known as a thread. These threads have shared memory, meaning that communication between them is fast but can easily lead to issues where the shared memory is written to at the same time by different threads, which can result in an unknown program state.
+
+The alternative to multithreading is multiprocessing. This is the process of spawning an entirely new operation system process that has its own program state and memory, with data being passed between the two via the operation system. Typically multiprocessing is slower than multithreading when many small operations are needed, but is much easier to manage for a more complex operations. 
+
+Multithreading has been selected for use in this package as each single operation is relatively simple, and updates only a single value in the shared memory. The distribution of operations can be implemented in such a way that there is no possibility of a value being written to by two threads at the same time. 
+
+In addition Julia's threading package has also been shown to be stable and resilient to crashing due to concurrent accessing of shared memory. It is worth noting that the threading module is marked as Beta by the Julia developers, but this is due to possible future changes in its API rather than problems with stability of the code.
+
+\subsubsection{Almost Cyclic Control Of Hildreth's Algorithm}\label{subsub:hildreth_almost_cyc}
+
+Hildreth's algorithm is the only target algorithm for implementation in this project, and its original formulation \cite{HildrethAPROCEDURE} assumes each iteration to be performed subsequently. This is not directly parallelisable. However, \cite{Lents1980EXTENSIONSPROGRAMMING} extends the proof of convergence of Hildreth's algorithm to cover cases where the iteration is defined by almost cyclic control, and also show that this control can deliver superior convergence results.
+
+To define an almost-cyclic sequence, let $I=\{1,2,\ldots,m\}$ be a finite set. A sequence $\{i_k\}^\infty_{k=0}$ is almost cyclic on $I$ if:
+\begin{itemize}
+    \item $i_k \in I$ for all $k \geq 0$
+    \item There exists integer $C$ such that for $\forall k \geq 0, I \subseteq \{i_{k+1},\ldots,i_{k+}\}$
+\end{itemize}
+The parameter $C$ ensures that after at most $C$ iterations, every index will have been visited. Almost cyclic control applies an almost-cyclic sequence to control the order that rows are considered. 
+
+This result illustrates how applying multithreading to Hildreth's algorithm does not negatively affect the algorithm itself. And as will be shown in Section \ref{sec:results}, this control can even result in superior performance.
+
+\subsubsection{Threading Implementation}
+
+RAM defines an iteration complete when every row in the problem matrix has been considered, and the appropriate variables updated. To maintain this design and avoid having to modify existing code it was decided to allow each operation within a single iteration to be distributed, but that each of these must complete before moving to the following iteration.
+
+For a problem of $n$ dimensions this allows up to $n$ operations to be performed concurrently. While this will result in unused computational power for small dimensioned problems, these problems are not typically the ones that require the acceleration provided by multithreading. 
+
+In addition, this requires the definition of a new temporary variable for each thread to access. This is necessary to ensure consistent behaviour for different algorithms. The alternative would be to require algorithm designers to set a threading variable themselves, which could create problems if they chose a type that was not thread-safe.
+
+\lstinputlisting[caption={RAM Threaded Iteration},label={lst:RAM_threaded},captionpos=b,linerange={86-93}]{Code/RAM_Code/Core.jl}
+
+The implementation of this operation is given in Listing \ref{lst:RAM_threaded}. Initially the temporary data vector is created, this takes the initial values returned from the algorithm and ensures that it is in the required vector format. The stopping conditions are then checked as before by a while loop. The iteration within the while loop utilises the \texttt{@threads} macro to distribute each iteration to an available thread. This continues until every iteration is complete, with the maximum number of concurrent operations being controlled by the number of threads Julia is configured to use.
+
+Note that each index of \texttt{thread\_var} is only ever updated once, this avoids any possibility of multiple writes occuring at the same time. Finally, after each iteration the function \texttt{VarUpdate} will ensure that the internal state of the algorithm is kept consistent with the result of the iteration. 
+
+There is no guarantee the order in which each iteration of the for loop will be carried out, or the input variables that an iteration will receive. For example, a 40 dimensional problem with eight threads will start the first eight computations with the initial \texttt{thread\_var} value, and each may not take the other answers into account when calculating their results (depending on the kind of operation they perform).
+
+For Hildreth's algorithm specifically, the out-of-order operation is not problematic (due to the almost-cyclic control). However, this does not offer any guaruntees of convergence for cases where several operations are performed in parallel without taking previous results into account. Testing on this method has not indicated that this is problematic. The results of the algorithm show very good scaling against the number of threads, as well as faster convergence than the non-threaded version (most likely due to the almost-cyclic control). However larger range of tests on a range of problem dimensions needs to be performed to confirm this observation.
+
+\subsection{Hildreth's Algorithm Implementation}\label{sub:hildreth_implementation}
+
+To create Hildreth's algorithm the model API needs to be implemented. Listing \ref{lst:RAM_model_formulation} shows the model formulation type, with each variable within it corresponding to the same variables defined in Section \ref{subsub:hildreth_algo}. The constructor of this type only takes the initial point as an opertional variable, and does not define the other variables. 
+
+\subsubsection{Hildreth Build Function}
+
+The additional values within the model formulation are set within the \texttt{Build} function, Listing \ref{lst:hildreth_build}. As can be seen, the matrices that define the problem are first accessed with the constraint and objective APIs, giving variables \texttt{G}, \texttt{h}, \texttt{B}, and \texttt{d}. The interior variables are then calculated. 
+
+\lstinputlisting[caption={Hildreth's Algorithm Build Stage},label={lst:hildreth_build},captionpos=b,linerange={51-56,61-66,69-75}]{Code/RAM_Code/Hildreth.jl}
+
+While mathematically correct, this function would benefit from several future improvements. As will be demonstrated in Section \ref{sec:results}, this build stage takes far longer than the actual optimisation for the majority of problems. This is due to the calculations of the dual variables \texttt{A} and \texttt{b}, performed on lines 7 and 8 of the function. These calculations are inherently expensive, however this is made worse for sparse problems by the pre-factorised matrix \texttt{B} not being sparse. This issue was discussed in \ref{sub:obj_ram_des}.
+
+Additionally the range of the random selection of the initial point has currently been chosen arbitrarily. While the algorithm only requires that the point be in the non-negative orthant of the problem space, it is likely that certain ranges of this variable will effect the problem. Further experiments would need to be done to see if changing this range will have an effect on the results of the algorithm.
+
+\subsubsection{Hildreth Standard Iteration}
+A single iteration is defined as running over all rows within the problem matrices. This is implemented with the function shown in Listing \ref{lst:hildreth_iteration}.
+
+\lstinputlisting[caption={Hildreth's Algorithm Iteration Stage},label={lst:hildreth_iteration},captionpos=b,linerange={112-112,116-123}]{Code/RAM_Code/Hildreth.jl}
+
+This series of calculations exactly corresponds to a part of the formulation of Hildreth's algorithm given in Section \ref{subsub:hildreth_algo}. While it may appear that the temporary variable \texttt{w} is an unnecessary allocation, experimentation showed that removing this and performing the calculation in a single statement had negligible performance impact. This implies that the compiler is able to recognise that this is a temporary variable and removes it. This iteration allocates no new memory, as it only updates the single variable that has already been allocated.  Therefore to aid readability, the temporary variable is left in place.
+
+The threaded implementation is very similar to the non-threaded iteration, but only performs an update of a single row, rather than iterating over all rows. 
+
+\subsubsection{Resolution and Variable Access}
+The final parts of the necessary API that Hildreth's algorithm must implement is the resolution and variable access functions, shown in Listings \ref{lst:hildreth_resolve} and \ref{lst:hildreth_getvar} respectively. 
+
+\lstinputlisting[caption={Hildreth's Algorithm Resolution stage},label={lst:hildreth_resolve},captionpos=b,linerange={181-183}]{Code/RAM_Code/Hildreth.jl}
+
+The resolution sets the dual variable \texttt{x} to its final value from the working variable \texttt{z}, this is the operation given in (\ref{eqn:hildreth_update_rule}). \texttt{GetVariables} implements the operation given in (\ref{eqn:dual_to_primal}) and returns the initial problem vector.
+
+\lstinputlisting[caption={Hildreth's Algorithm Variable Access Function},label={lst:hildreth_getvar},captionpos=b,linerange={185-188}]{Code/RAM_Code/Hildreth.jl}
+
+It is worth noting that (\ref{eqn:dual_to_primal}) is a relatively expensive operation. This is the reason that the result of this is saved in the \texttt{result} entry of \texttt{RAMProblem} (Listing \ref{lst:RAMProblem}), so that multiple calls to access these variables does not result in additional computation.

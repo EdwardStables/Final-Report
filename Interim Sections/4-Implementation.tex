@@ -1,0 +1,127 @@
+\section{Implementation}\label{sec_implementation}
+\subsection{Initial Project Plan}
+After deciding the solvers that this project would focus on (Hildreth, MADS, PIPS-NLP, and OSQP), and doing research on the additional features that would be needed for this to be successfully implemented (specifically, implementing solver interfaces and benchmarking utilities), the Gantt chart shown in Figure \ref{fig:original_gantt} was created. This shows that a period of two months was set aside for each solver, with the reduced time for Hildreth's algorithm due to work already done at that point. This plan also takes into account the time needed for exam preparation, and the lack of progress that would take place during that period. 
+
+\begin{figure}[h]
+    \centering
+    \includegraphics[width=\textwidth]{media/original_gantt.png}
+    \caption{Original Project Plan}
+    \label{fig:original_gantt}
+\end{figure}
+
+Due to several factors, it was not possible to follow this plan exactly during the Autumn term. This was the result of the transition from implementing just Hildreth's algorithm to the implementation of a row-action framework, requiring the refactoring of a large body of code, and extra time needed for design and testing.
+
+In addition, it became clear that to properly evaluate the frameworks's performance and verify solver stability on a variety of problems, it was necessary to run benchmarks on a wide range of problems. As will be discussed further in \ref{sub_evaluation} the CUTEst benchmarking software \cite{Gould2013CUTEst:Threads} is utilised for this. A Julia package for interfacing with the CUTEst environment is already implemented as part of the JuliaSmoothOptimizers package \cite{JuliaSmoothOptimizers/CUTEst.jl:Interface}, importing the problems in a format compatible with JuMP. Therefore, loading these problems into the framework for benchmarking requires a MOI wrapper to be implemented. This earlier need for the MOI wrapper shifted this task earlier in the plan, further delaying the start on subsequent tasks. 
+
+\subsection{Current Solver Design Progress}\label{sub_solver_progress}
+All of the implementation progress so far has been based on the row action method framework, with the package being named RowActionMethods.jl (RAM). At the time of writing, initial work on the MADS algorithm and its associated package DirectSearchMethods.jl (DSM) is commencing, but has not yet had code implemented, therefore will not be discussed here.
+
+\subsubsection{Initial Work}
+The first version of this package was a standalone implementation of Hildreth's original method, with the code initially adapted from the MATLAB code presented in \cite{LiupingWang2009ModelMATLAB}. This was modified into a form that made more sense for Julia's design, and split into smaller functions that allowed for easier testing. 
+
+This process of splitting the code made it clear that the package could be generalised with relatively few design changes. This package design process is discussed further in Section \ref{sub_framework_prog}. 
+
+
+\subsubsection{Hildreth's Algorithm Implementation}\label{subsub:hildreth}
+With the framework of the problem abstracted away from the Hildreth specific implementation it became necessary to redesign the solver to better fit with the requirements of the framework. This takes the form of a data-structure and iteration function pair, shown in Figure \ref{fig:hildreth_imp}.
+
+\begin{figure}[th]
+    \centering
+    \lstinputlisting[language=julia,mathescape,frame={},linerange={20-26,30-31}]{code/Hildreth.jl}
+    \lstinputlisting[language=julia,mathescape,frame={},firstline=62,lastline=76]{code/Hildreth.jl}
+    \caption{Data structure and iteration function for Hildreth's algorithm (minimal example adapted from the main codebase)}
+    \label{fig:hildreth_imp}
+\end{figure}
+
+The \texttt{struct} HildrethModel describes every variable that is needed for defining and solving the problem. The first four variables (\texttt{C}, \texttt{d}, \texttt{G}, and \texttt{h}) describe the QP problem described in Equation \ref{eqn:QP_prob}. The remaining variables act as intermediary variables for the solver to operate on. The generation of the variables \texttt{A} and \texttt{b} is defined by Equations \ref{eqn:QP_prob_var_A} and \ref{eqn:QP_prob_var_b} respectively. The final entry is a dictionary that allows for variables needed in the solver to be dynamically designed and removed as needed. In most cases it contains the keys \texttt{"iterations"}, \texttt{"z"}, and \texttt{"z\_old"}. Respectively, these map to the number of iterations that have been run, the current decision variable, and the decision variable of the previous iteration. It is not seen in Figure \ref{fig:hildreth_imp}, but the \texttt{"iterations"}, and \texttt{"z\_old"} entries in \texttt{workingvars} are utilised when checking for whether the algorithm has met the conditions for stopping.
+
+The function \texttt{iterate!} is the function that calculates one iteration of the algorithm and applies it to the current problem state. The function is passed a variable named \texttt{model} of type \texttt{HildrethModel}, the type of the struct previously discussed. Firstly, temporary variables are allocated from those within the model, just to increase readability of the following calculations. Following this, the algorithm iterates over every row in the dual formulation, implementing an equivalent formulation of Hildreth's algorithm [\cite{Lents1980EXTENSIONSPROGRAMMING}, 2.7] to that previously discussed in Section \ref{subsub_hildreth_algo}.
+
+\subsubsection{Extended Hildreth's Implementation}
+An additional implementation of Hildreth's algorithm is also in the process of being implemented in the framework. This takes into account multiple refinements presented in \cite{Lents1980EXTENSIONSPROGRAMMING}. The main improvements to the algorithm are the addition of almost-cyclic control and relaxation parameters.
+
+The implementation is very similar to that discussed in Section \ref{subsub:hildreth}, with some interesting additions. For example, the almost-cyclic control requires that the row iterations can be controlled by the user, not automated as in Figure \ref{fig:hildreth_imp}. A possible solution to this is Julia's feature of treating functions as first class objects. In practice this means that a function is just another variable that can be passed around to other functions. In this case, the user can design a function that is able to generate the list of indexes that an iteration should access, with this function stored in the problem description struct just like any other variable.
+
+As with Hildreth's original method, this algorithm was implemented prior to the addition of the MOI wrapper to the RAM package. However, Hildreth's algorithm was update alongside the progress of the wrapper for testing purposes, and the extended algorithm was not. This has left it in a state currently inconsistent with the design styles discussed elsewhere in the report, hence its lack of detailed discussion.
+
+\subsection{Current Framework Design Progress}\label{sub_framework_prog}
+In addition to the implementation of the algorithms themselves, a significant amount of effort has been given to the design of the framework. Three distinct parts of the design process are presented here. 
+
+\subsubsection{API Design}
+This aspect of the design of the framework is crucial for allowing implemented algorithms to run in a high-performance manner, and yet still be flexible enough to adapt to the majority of requirements an algorithm may present.
+
+Table \ref{table:RAM_api} describes the current API that each solver must implement to be compatible with RAM. The API is not currently complete, as the package is still in development, but the main sections that describe the requirements of RAM are present. The intention is to provide future developers as much freedom as possible when implementing their algorithms. To this end, each function and datatype are quite broad in their definition, with the intention that the developer is able to concentrate on the internal function of their algorithms. Note that the function naming follows the Julia convention of using minimal underscores, unless the name would be otherwise difficult to read, and for using an exclamation point at the end of the name to indicate that the function modifies one of the variables it is passed.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{|l|p{11.5cm}|}
+\hline
+Function Name       & Description                                                                   \\ \hline
+\texttt{iterate!}           & Runs one iteration of the solver (an implementation is seen in Figure \ref{fig:hildreth_imp}) \\ \hline
+\texttt{setobjective!}      & Sets the passed variables as the objective function of the solver             \\ \hline
+\texttt{setconstraint!}     & Adds a constraint to the solver                                               \\ \hline
+\texttt{buildmodel!}        & Generates internal variables from the provided objective and constraints      \\ \hline
+\texttt{is\_empty}          & Returns a boolean to show if any variables have been set in the model         \\ \hline
+\texttt{resolver!}          & Generates the primal decision result value from the current problem variables \\ \hline
+\texttt{objective\_answer}  & Returns the minimal objective value                                           \\ \hline
+\texttt{decision\_answer}   & Returns the decision variables corresponding to the minimum objective value   \\ \hline
+\end{tabular}
+\caption{Current RAM Framework API}
+\label{table:RAM_api}
+\end{table}
+
+Each algorithm also implements a \texttt{struct} that describes their problem in its entirety (for example, the \texttt{struct} in Figure \ref{fig:hildreth_imp} is used in the implementation of Hildreth's algorithm). These types are used to enable multiple dispatch on each of the functions in the API. Each algorithm implements their own version, that takes only the data types they have defined as an argument, and Julia ensures that when the main framework calls the function, only the appropriate solver responds. 
+
+\begin{figure}[th]
+    \centering
+    \lstinputlisting[language=julia,mathescape,frame={},firstline=57,lastline=73]{code/RowActionMethods.jl}
+    \caption{Main iteration function used for the framework.}
+    \label{fig:iterate_model!}
+\end{figure}
+
+Figure \ref{fig:iterate_model!} shows the main iteration function within the framework. This is a unique function, unlike those in Table \ref{table:RAM_api}, which calls the \texttt{iterate!} function of whichever algorithm is appropriate for the \texttt{model} variable, with Julia's multiple dispatch neatly assigning the correct function without any manual parsing required. 
+
+As can be seen from these examples, Julia allows for an API to be defined, and new functionality to be added without editing any code that is currently in place. Adding another solver simply requires implementing the necessary functions, and including the new files in the same directory as the rest of the package, with no need to make multiple changes to parsers or decision blocks.
+
+\subsubsection{Stopping Conditions}\label{subsub:stop}
+An important aspect of the framework design is the implementation of termination conditions of the solver. As with the rest of the design of the framework, having a system that is high performance, but also highly flexible and extensible is necessary. This is further complicated by the variation that each solver can have, due to the flexibility of the API. 
+
+In an effort to implement a simple but robust system of stopping conditions for the framework, influence was taken from a talk given at Juliacon 2019 \cite{JuliaConYouTube}, showcasing a design pattern that makes use of multiple dispatch to implement a high expandable system of condition checking. This approach defines a single function \texttt{stopcondition} that is implemented separately for each desired stopping condition. Each stopping condition is given its own type, and then multiple dispatch is able to call the correct checks. This solution is very suitable for this framework, as it places absolutely no responsibility on the framework itself for knowing the internals of each solver, or the stopping conditions. 
+
+\begin{figure}[th]
+    \centering
+    \lstinputlisting[language=julia,mathescape,frame={},firstline=15,lastline=17]{code/StopConditions.jl}
+    \lstinputlisting[language=julia,mathescape,frame={},firstline=59,lastline=63]{code/StopConditions.jl}
+    \caption{An example of a stopping condition implemented in the RAM framework}
+    \label{fig:stop_conditions}
+\end{figure}
+
+Figure \ref{fig:stop_conditions} shows the implementation of a possible stopping condition. If a model is optimised with the stopping condition child type \texttt{SC\_Iterations}, then before each iteration the corresponding \texttt{stopcondition} function is run. In this case the function implements a check between the number of iterations of the current model, and the limit of iterations that has been set by the \texttt{SC\_Iterations} stopping condition type, returning a boolean to indicate if the condition for stopping has been met.
+
+\subsubsection{MOI Wrapper}\label{subsub_moi}
+The MOI wrapper is a crucial aspect for the usability of the software. Implementing this wrapper makes the package compatible with JuMP, allowing for very simple definition of problems, as well as automatic reformulation of problems. 
+
+`Wrapper' in this context refers to the implementation of an API defined within MOI that allows external software to control the package without knowing anything of its internal design. The design of MOI makes extensive use of multiple dispatch to implement its API, which has the advantage of making it highly flexible for the end user. 
+
+An example of this flexibility is when setting objective functions. MOI defines a large range of equation types for objective functions, but most solvers will only be able to use an handful of these (e.g. Hildreth's algorithm is not able to take a linear function as its objective function). The package designer need only implement the interface that they actively support (the interface for setting a quadratic objective function). MOI is able to see the range of values that a package supports, and either inform the end-user that the solver does not support what they have asked for, or reformulate their request into an equivalent format that the solver does support.
+
+Full compatibility with the MOI interface is quite difficult to ensure, as it requires a very fine degree of control over the internal variables of the solver. For example, the full interface should be able to make modifications to existing constraints and variables by accessing them with an identifier that is returned when they are instantiated. This functionality, while useful, brings a large amount of requirements for the internal structure of the solver that goes against the design of this framework. The same example of modifying existing constraints would require the addition of several new functions to the API in Table \ref{table:RAM_api}, reducing the freedom that algorithm designers have. 
+
+It is possible that a half-way implementation is performed, where these methods are made accessible to the designers, who made choose to implement them or not. The decision has not been made on this as of yet, as the MOI wrapper itself has only just become functional in a basic manner. It should also be noted that designing a single MOI wrapper around multiple solvers is not within the original design intentions of MOI, and requires careful planning to ensure that functionality is not lost. 
+
+\subsection{Updated Project Plan}
+Moving into the Spring term, it is obvious that the initial plan needs to be revised. Having become more experienced with packages like MOI, the amount of work needed for full compatibility is much clearer. MOI allows for a large amount of functionality with only a subset of its API implemented, but as the package is used more often, a larger degree of of MOI's API will be needed. Based on the current level of implementation, it seems likely that a usable implementation of MOI (and therefore also JuMP) will be possible shortly after the submission of this report. This will allow for benchmarking, and a greater degree of testing to be performed. 
+
+It can safely be assumed that having a greater number of large testcases will result in issues being found within the algorithm implementations, requiring more time commitment to the RAM package before it reaches a stable state. However, during this debugging time, work can start on implementation of the next package. 
+This next package will be similar to RAM in that it will implement a framework that contains similar algorithms, this time it will be based on the category of Direct Search algorithms, with the main algorithm of interest being MADS, discussed in Section \ref{sub_MADS}. It is believed that the experience gained from developing RAM, as well as the larger amount of available time for development, should result in the Direct Line Search package being much faster to implement. 
+
+Following this, the PIPS-NLP and OSQP algorithms will be implemented, whether these will be implemented as single algorithms or frameworks of categories of algorithms has not yet been decided. It is most likely that they will not be designed in as general as a way as RAM and DSM are, rather they will be focused on the single underlying algorithm, but designed to allow certain aspects of the solver to be swapped out, to allow for experimenting with different methods for single parts. 
+
+An updated Gantt chart of the predicted progress is shown in Figure \ref{fig:updated_gantt}. This plan shows work starting on the Direct Line Search package within two weeks of the submission of this report, and debugging/optimisation work on RAM continuing for another few weeks. Note that time is dedicated to MOI integration and benchmarking at the end of the implementation period of each solver. 
+
+\begin{figure}[h]
+    \centering
+    \includegraphics[width=0.8\textwidth]{media/updated_gantt.png}
+    \caption{Updated Project Plan}
+    \label{fig:updated_gantt}
+\end{figure}

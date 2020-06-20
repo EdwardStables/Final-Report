@@ -1,0 +1,85 @@
+\section{Requirements}\label{sec:requirements}
+\subsection{Initial Project Specification}
+After the commencement of the project, a meeting was held where the exact focus of the project was discussed, with the initial aim being to select a set of solvers to implement in Julia. It was important to choose solvers that were representative of a broad range of algorithm types, but also to not replicate any work that had already been done to implement solvers in native Julia. 
+
+In order to showcase derivative-free, first-order, and second-order solvers the decision was made to implement the \ac{MADS} \cite{Audet2007MeshOptimization}, OSQP \cite{Stellato2017OSQP:Programs}, and PIPS-NLP \cite{ChiangStructuredPIPS-NLP} algorithms, respectively. In addition, an implementation of Hildreth's Algorithm \cite{HildrethAPROCEDURE} would be included to provide an implementation of row-action method algorithms. 
+
+During the implementation of Hildreth's algorithm it was remarked that the design of the package would be very easy to generalise to an entire category of solvers, with Julia's multiple dispatch paradigm allowing new row action methods to be easily added. As such, we decided to transition the aim of this sub-project to the design a framework in which any row-action method can easily be implemented. It was also discussed whether this idea could also be applied to the \ac{MADS} algorithm sub-project, by implementing a framework for direct-search methods rather than just the \ac{MADS} algorithm itself. 
+
+The increase in scope of these two packages decreased the time available to focus on the OSQP and PIPS-NLP algorithms. It was decided to remove these from the project aims, and focus on developing the row action methods and direct search packages to be as high quality as possible.
+
+This gives the final high-level project specification: The development of two optimisation packages in Julia, one that implements a framework for the development of row action method algorithms, and the other a framework for the development of direct search methods. The highest priority of these packages is to facilitate simple algorithm modification, with a secondary priority being to ensure the code is high performance.
+
+\subsection{Shared Requirements}
+Each of the packages share a set of requirements that will ensure they are developed to a high standard, and are able to provide a useful utility. 
+
+
+
+\subsubsection{Code Style}
+Ensuring a consistent naming convention and use of programming idioms helps to make code understandable. For the most part the project follows the Julia style guide \cite{JuliaGuide}. The recommendations in this document allow for both a programming style in common with the majority of the Julia codebase, but also helps to avoid pitfalls that lead to overly complex/unmaintainable code, or performance problems.
+
+An exception to this is when working with external package that do not follow these guidelines. For example, it is common in Julia to append a \texttt{!} symbol to the name of functions that modify their arguments. However, \ac{MOI} (Section \ref{subsub:mathoptinterface}) forgoes this convention due to the majority of its functions modifying the arguments. As \ac{RAM} makes use of \ac{MOI} extensively, this convention was adopted.
+
+\subsubsection{Documentation}
+Documentation is crucial for both the user and maintainer of a package to understand how the software works. Julia has a flexible documentation system in the form of `docstrings'. These define a format of strings that are placed above the definition of a function or type and is taken as documentation of that object. 
+
+Listing \ref{lst:docstring} demonstrates the formatting of a docstring. Docstrings support markdown formatting, as well as LaTeX equation formatting. This allows for usage examples to be included within the documentation.
+\lstinputlisting[caption={A docstring in Julia},label={lst:docstring},captionpos=b,linerange={1-8}]{Code/example_code/docstring_example.jl}
+When queried within Julia, the docstring is immediately formatted and printed to the command line (Listing \ref{lst:docstring_print}). This shows the utility of docstrings, immediately being printed when a user needs them.
+\lstinputlisting[caption={A formatted docstring in the Julia command line},label={lst:docstring_print},captionpos=b,linerange={11-17}]{Code/example_code/docstring_example.jl}
+
+It is also possible to create longer form documentation for a Julia package using the Documenter.jl package \cite{Documenter.jlPackage}. This package provides a mechanism for standalone documentation pages to be written (for example, as a guide on how to use the package), and also have pages that automatically import documentation from docstrings. 
+
+This solution allows for accurate detailed information on each function to be very easily incorporated with higher level descriptions of a package. For this reason, having detailed documentation for the packages is a high requirement of this project. 
+
+\subsubsection{Testing}
+Testing to ensure that the code actually performs its intended function is just as important as the functionality of the code itself. As with documentation, Julia contains powerful testing utilities that make it simple to create tests alongside source code. 
+
+A unit test is defined as a set of tests that validate that a `unit' of software is behaving as intended. In most cases this unit maps to a single function within the codebase. Each test within the unit test is typically small, testing the result of a function call against a known correct solution. For good unit testing, several inputs that cover the main operation range of the function should be given, as well as several tests on the edge-cases (e.g. if a function is valid for only positive integers then it should be tested for a zero-valued input). In addition, testing to ensure that the function fails correctly for invalid inputs is also useful (e.g. providing a negative input to the previous example).
+
+Julia's system for unit testing consists of three macros, \texttt{@test}, \texttt{@testset}, and \texttt{@test\_throws}. \texttt{@test} evaluates an equality test that follows it, and accumulates all such tests into a report. \texttt{@testset} defines a group of \texttt{@test}s and other \texttt{@testset}s with a common name, and is useful for organising tests. \texttt{@test\_throws} is used to check that a function fails in a defined way, but otherwise behave identically to \texttt{@test}.
+
+\lstinputlisting[caption={A unit test in Julia},label={lst:unit_test},captionpos=b]{Code/example_code/unit_test_example.jl}
+
+An example of a small unit test is given in Listing \ref{lst:unit_test}. This tests the behaviour of the \texttt{SetInitialPoint} function from the \ac{DS} package. Firstly setup is done, defining the problem as a two dimensional direct search problem. It is then verified that an error is thrown when trying to set an initial point of a different dimension to the problem. A valid initial point is then set, and it is verified that the corresponding action the function implements has been performed (that being setting the \texttt{user\_initial\_point} value within the direct search problem. Note that this is a subset of the tests actually done on this function in \ac{DS}.
+
+As a complex piece of software can have many errors introduced when being implemented, it is critical that these tests are included to verify the software behaves as intended. In addition, it is necessary to test the behaviour of algorithms to ensure the understood behaviour is the same as that defined by the algorithm designers. 
+
+For the implementation of \ac{MADS}, the paper authors have included many examples of the output of their algorithms, this allows simple testing where the outputs are compared for a given input configuration. An example of these results can be seen in \textit{Example 4.1} of \cite{Audet2007MeshOptimization}.
+
+This is more complex for \ac{RAM} as the same kinds of examples are not given. A solution to this is to implement the algorithms separately using a different method to the package's implementation and and record the outputs for a wide set of inputs. The package can then be checked against these results. This does not protect against a fundamental misunderstanding of the algorithm, but does test against mistakes in implementation. Separate tests can then be made on the performance of the algorithm to ensure it converges to a correct value in an expected number of iterations to confirm that the understood algorithm is behaving as intended.
+
+Testing on the behaviour of algorithms (e.g. number of iterations to converge on a known problem) is also useful to ensure that a change to the code has not introduced problems that are not shown by other tests. This can be verified by recording the state following a run of a trusted implementation of the algorithm, and comparing it to the state following new implementations. 
+
+\subsubsection{Continuous Integration}
+Another aspect of software development that integrates well with documentation and testing is continuous integration. At its core, continuous integration is the process of running scripts to automate tasks whenever new code is added to the repository. 
+
+The main use of this is to run all the defined tests on new code additions. While the developer should have run the tests before adding code, the continuous integration allows for the same tests to be run in a variety of environments. For example, multiple versions of software (e.g. Julia versions 1.2, 1.3, and 1.4 are all in common use while producing this project), and on multiple operating systems (it is relatively common to find that code that runs well on Linux or MacOS has problems on Windows, and vice versa). 
+
+Continuous integration also allows for the automation of generating and publishing documentation. The technique in common use within Julia is to define the contents of the documentation with markdown files. These are then automatically rendered by the continuous integration service when added to the project and published to a documentation website.
+
+For this project, Travis \cite{Travis} is used for continuous integration, GitHub \cite{GitHub} is used for code hosting, and GitHub Pages \cite{GitHubPages} is used for documentation deployment. 
+
+\subsection{Requirements of RowActionMethods.jl}\label{sub:ram_req}
+
+The design and structure of the package should make it simple to add new row action algorithms. This requires an \ac{API} that allows for many different kinds of algorithms to be added and work well within the package, without adding performance problems.
+
+The kinds of problems required for the example algorithm, Hildreth's algorithm, makes use of a quadratic objective function and linear constraints. Therefore the software must be able to represent these kinds of problems, and be designed in such a way that it is simple to add other kinds of objective functions and constraint types in future.
+
+As discussed in the overview of row action methods and Hildreth's algorithn (Section \ref{sub_row_action}), the main advantages of these methods are their application to sparse and large problems. Therefore the package should take advantage of this structure by using appropriate sparse data storage types. 
+
+The package should be able to offer performance comparable to that of other quadratic solvers, such as OSQP \cite{Stellato2017OSQP:Programs}, and superior performance to more generic nonlinear solvers such as IPOPT \cite{Wachter2006OnProgramming}.
+
+Finally, one of the advantages of the row action methods is the ability to compute them in a very parallel manner (as the calculations in each iteration can be made independent of each other). Theoretically this allows an N-fold increase in the number of processors to scale to N-times the performance (although this is limited by the number of rows in the problem matrices). An implementation of this package should allow this kind of scaling to be observed, with the understanding that a certain penalty will be paid for the overhead in distributing and collecting these operations.
+
+\subsection{Requirements of DirectSearch.jl}\label{sub:ds_req}
+
+The package should implement the core \ac{MADS} algorithms: \ac{MADS-EB}, \ac{MADS-PB}, \ac{LTMADS}, and \ac{OrthoMADS}.
+
+The package should require a similar number of objective function evaluations as NOMAD. As it is expected that the target problems will be far more costly than MADS itself, this ensures that no extra wasteful computations are performed.
+
+The package should be able to offer performance similar to that of NOMAD (when NOMAD is configured to use the same algorithms as \ac{DS}). This ensures that no additional overhead is being introduced.
+
+Rather than swapping out entire algorithms, as with \ac{RAM}, the modularity of the \ac{MADS} family allows for different parts to be combined to define an algorithm. Therefore the package should be designed in such a way that it is simple to design and integrate different parts of the \ac{MADS} algorithm.
+
+Finally, the package should be designed such that it is simple to define a new sub-algorithm that can be used with the existing algorithms of the package. This extends to poll steps, search steps, and constraints.
